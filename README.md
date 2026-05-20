@@ -2,15 +2,14 @@
 
 # HRM-Text: Efficient Pretraining Beyond Scaling
 
+<p align="center">
+  <a href="https://sapientinc.github.io/HRM-Text/assets/HRM_Text.pdf"><img src="https://img.shields.io/badge/Paper-PDF-red" alt="Paper"></a>
+  <a href="https://huggingface.co/sapientinc/HRM-Text-1B"><img src="https://img.shields.io/badge/Model-HuggingFace-yellow" alt="Model"></a>
+</p>
+
 <p align="center"><strong>🌟 Pretrain a foundation model from scratch with ~$1000. 🌠</strong></p>
 
 HRM-Text is a 1B text generation model based on the HRM architecture, strengthened by task completion and latent space reasoning. It offers a full pretraining framework, making foundation model pretraining accessible with 130-600x less compute and 150-900x less data. It is built upon a hierarchical recurrent architecture, PrefixLM sequence packing, FlashAttention 3 kernels, PyTorch FSDP2 training, evaluation, and checkpoint conversion tooling.
-
-<div style="text-align: center;">
-  <a href="https://huggingface.co/sapientinc/HRM-Text-1B" target="_blank" rel="noopener noreferrer">
-    <img src="https://huggingface.co/datasets/huggingface/badges/resolve/main/model-on-hf-md.svg" alt="Model on Hugging Face">
-  </a>
-</div>
 
 ![](./assets/benchmark_scatter.png)
 
