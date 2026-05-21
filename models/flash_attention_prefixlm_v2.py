@@ -4,7 +4,15 @@ import torch
 from torch import Tensor
 import numpy as np
 
-from flash_attn_interface import _flash_attn_backward, maybe_contiguous
+try:
+    from flash_attn_interface import _flash_attn_backward, maybe_contiguous
+    FLASH_ATTN_AVAILABLE = True
+except ImportError:
+    _flash_attn_backward = None
+    FLASH_ATTN_AVAILABLE = False
+
+    def maybe_contiguous(x):
+        return x.contiguous() if x is not None and not x.is_contiguous() else x
 
 
 def compute_aux_seq_tensors_scalars(prefix_lens: np.ndarray, causal_lens: np.ndarray, batch_max_tokens: int):
@@ -39,6 +47,9 @@ def _custom_flash_attn_forward(
 ) -> Tuple[Tensor, Tensor]:
     """Custom implementation of _flash_attn_forward to fix the following issue. Can be removed if the fix is merged to FA3 main branch.
     https://github.com/Dao-AILab/flash-attention/issues/2073"""
+    if not FLASH_ATTN_AVAILABLE:
+        raise ImportError("flash_attn_interface is required for FlashAttention-3 forward.")
+
     q, k = [maybe_contiguous(x) for x in (q, k)]
     v = v.contiguous() if v.stride(-1) != 1 and v.stride(-3) != 1 else v
 
@@ -96,6 +107,9 @@ def flash_attn_varlen_prefixlm_compileop(
     # CPU tensors (scalars)
     total_seqlen: Tensor, numseqs: Tensor, max_seqlen_prefix: Tensor, max_seqlen_causal: Tensor, max_seqlen_all: Tensor,
 ) -> Tuple[Tensor, Tensor, Tensor]:
+    if _flash_attn_backward is None:
+        raise ImportError("flash_attn_interface is required for FlashAttention-3 backward.")
+
     # Output buffer
     out = torch.empty_like(q)
 
@@ -276,6 +290,9 @@ def flash_attn_varlen_prefixlm(q: Tensor,
                                prefix_lens: Tensor, causal_lens: Tensor, cu_seqlens: Tensor,
                                # CPU tensors (scalars)
                                total_seqlen: Tensor, numseqs: Tensor, max_seqlen_prefix: Tensor, max_seqlen_causal: Tensor, max_seqlen_all: Tensor):
+    if not FLASH_ATTN_AVAILABLE:
+        raise ImportError("flash_attn_interface is required for FlashAttention-3 PrefixLM attention.")
+
     # Apply function
     return FlashAttnVarlenPrefixLM.apply(q, k, v, is_causal,
                                          prefix_lens, causal_lens, cu_seqlens,

@@ -4,9 +4,9 @@ import math
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from models.layers import SwiGLU, AttnType, Attention, Cache, RotaryEmbedding, find_multiple
+from models.layers import SwiGLU, AttnType, Attention, SpectreAttention, Cache, RotaryEmbedding, find_multiple
 
 
 class InitConfig(BaseModel):
@@ -14,6 +14,13 @@ class InitConfig(BaseModel):
 
     attn_out_std: float
     ff_out_std: float
+
+
+class FourierLinearConfig(BaseModel):
+    enabled: bool = False
+    target: Literal["mlp", "attention", "all"] = "mlp"
+    in_modes: int = 128
+    out_modes: int = 128
 
 
 class TransformerConfig(BaseModel):
@@ -37,6 +44,11 @@ class TransformerConfig(BaseModel):
 
     pos_emb_type: Literal["rope", "none"]
     rope_theta: Optional[float] = None
+    token_mixer: Literal["attention", "spectre"] = "attention"
+    spectre_num_buckets: int = 16
+    spectre_gate_hidden: Optional[int] = None
+    spectre_dropout: float = 0.0
+    fourier_linear: FourierLinearConfig = Field(default_factory=FourierLinearConfig)
 
     # [Computed properties]
     @property
@@ -65,22 +77,32 @@ class TransformerConfig(BaseModel):
 class TransformerBlock(nn.Module):
     def __init__(self, config: TransformerConfig) -> None:
         super().__init__()
-        self.attn = Attention(
+        attn_kwargs = dict(
             hidden_size=config.hidden_size,
             head_dim=config.hidden_size // config.num_heads,
             num_heads=config.num_heads,
             num_key_value_heads=config.num_heads,
             attn_type=config.attn_type,
-
             init_std_in=config.init_config.in_std,
-            init_std_out=config.init_config.attn_out_std
+            init_std_out=config.init_config.attn_out_std,
+            fourier_linear=config.fourier_linear,
         )
+        if config.token_mixer == "spectre":
+            self.attn = SpectreAttention(
+                **attn_kwargs,
+                spectre_num_buckets=config.spectre_num_buckets,
+                spectre_gate_hidden=config.spectre_gate_hidden,
+                spectre_dropout=config.spectre_dropout,
+            )
+        else:
+            self.attn = Attention(**attn_kwargs)
         self.mlp = SwiGLU(
             hidden_size=config.hidden_size,
             intermediate_size=config.intermediate_size,
             
             init_std_in=config.init_config.in_std,
-            init_std_out=config.init_config.ff_out_std
+            init_std_out=config.init_config.ff_out_std,
+            fourier_linear=config.fourier_linear,
         )
         
         self.forward = getattr(self, f"_forward_{config.norm_type}")  # Avoid branching logic in "forward" for torch.compile compatibility

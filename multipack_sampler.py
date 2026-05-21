@@ -4,7 +4,16 @@ import torch.distributed as dist
 from torch.utils.data import Sampler
 
 import numpy as np
-import numba
+try:
+    import numba
+except ImportError:
+    class _NoNumba:
+        def njit(self, fn=None, *args, **kwargs):
+            if fn is None:
+                return lambda wrapped: wrapped
+            return fn
+
+    numba = _NoNumba()
 
 
 @numba.njit

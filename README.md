@@ -1,5 +1,9 @@
 ![](./assets/banner.png)
 
+# Spectral-HRM
+
+This fork explores low-VRAM HRM-Text pretraining through Fourier/spectral parameterization, tied Fourier vocab heads, tokenizer-aware vocab ordering, SPECTRE-style mixers, and checkpointed vocab-weight reconstruction. The numbered experiment log lives in [`experiments/`](experiments/README.md).
+
 # HRM-Text: Efficient Pretraining Beyond Scaling
 
 <p align="center">
