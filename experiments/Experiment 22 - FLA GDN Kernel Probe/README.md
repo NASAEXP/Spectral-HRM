@@ -54,3 +54,17 @@ Read:
 - FLA itself installs here.
 - The optimized Gated DeltaNet layer does not import locally because Triton is unavailable for this Python/Windows environment.
 - Do not wire `fla.layers.GatedDeltaNet` into HRM on this machine yet. The proper speed pass needs Linux/Colab where Triton can install and the FLA kernels can actually load.
+
+Free Colab result:
+
+```text
+status=ready
+fla_available=True
+triton_available=True
+gdn_import_ok=True
+```
+
+Read:
+
+- Free Colab can import the FLA GatedDeltaNet layer.
+- This unlocks Experiment 24 as the real optimized speed pass.

@@ -697,6 +697,85 @@ class GatedDeltaNetAttention(DeltaNetAttention):
         return decay_t[:, None, None] * state + beta_t[:, None, None] * update
 
 
+def _load_fla_gated_deltanet():
+    try:
+        from fla.layers import GatedDeltaNet
+    except Exception as exc:
+        raise ImportError(
+            "token_mixer='fla_gdn' requires flash-linear-attention with Triton. "
+            "Run Experiment 22 to check this environment."
+        ) from exc
+    return GatedDeltaNet
+
+
+class FLAGatedDeltaNetAttention(nn.Module):
+    """Thin HRM packed-sequence adapter around FLA's optimized GatedDeltaNet."""
+
+    def __init__(self,
+                 hidden_size,
+                 head_dim,
+                 num_heads,
+                 num_key_value_heads,
+                 attn_type,
+                 init_std_in=None,
+                 init_std_out=None,
+                 fourier_linear=None,
+                 **kwargs):
+        super().__init__()
+        if hidden_size != head_dim * num_heads:
+            raise ValueError("FLAGatedDeltaNetAttention requires hidden_size == head_dim * num_heads.")
+        if num_key_value_heads != num_heads:
+            raise ValueError("FLAGatedDeltaNetAttention currently requires num_key_value_heads == num_heads.")
+        if fourier_linear is not None and getattr(fourier_linear, "enabled", False):
+            raise NotImplementedError("FLAGatedDeltaNetAttention does not support FourierLinear projections yet.")
+
+        GatedDeltaNet = _load_fla_gated_deltanet()
+        self.hidden_size = hidden_size
+        self.head_dim = head_dim
+        self.num_heads = num_heads
+        self.num_key_value_heads = num_key_value_heads
+        self.attn_type = attn_type
+        self.fla = GatedDeltaNet(
+            hidden_size=hidden_size,
+            expand_v=1,
+            head_dim=head_dim,
+            num_heads=num_heads,
+            num_v_heads=num_heads,
+            mode="chunk",
+            use_gate=True,
+            use_short_conv=True,
+        )
+
+    def _packed_to_batched(self, hidden_states: Tensor, total_seqlen: int, numseqs: int, cu_seqlens: Tensor) -> tuple[Tensor, int]:
+        active = hidden_states[:total_seqlen]
+        lengths = cu_seqlens[1:numseqs + 1] - cu_seqlens[:numseqs]
+        if lengths.numel() == 0:
+            raise ValueError("FLAGatedDeltaNetAttention needs at least one sequence.")
+        seq_len = int(lengths[0].item())
+        if not torch.all(lengths == seq_len):
+            raise NotImplementedError("FLAGatedDeltaNetAttention currently requires equal-length packed sequences.")
+        if total_seqlen != numseqs * seq_len:
+            raise ValueError("Packed sequence metadata does not match total_seqlen.")
+        return active.reshape(numseqs, seq_len, self.hidden_size), seq_len
+
+    def forward(self, hidden_states: Tensor, cos_sin: Optional[CosSin], cache: Optional[Cache] = None, cache_lengths: Optional[Tensor] = None, **seq_info) -> Tensor:
+        if cache is not None:
+            raise NotImplementedError("FLAGatedDeltaNetAttention does not support cached generation yet.")
+        if hidden_states.dim() != 2:
+            raise NotImplementedError("FLAGatedDeltaNetAttention currently supports packed [tokens, hidden] inputs only.")
+
+        total_seqlen = _tensor_item(seq_info.get("total_seqlen", hidden_states.shape[0]))
+        numseqs = _tensor_item(seq_info.get("numseqs", 1))
+        cu_seqlens = unwrap_tensor(seq_info.get("cu_seqlens", torch.tensor([0, total_seqlen], device=hidden_states.device)))
+
+        batched, _seq_len = self._packed_to_batched(hidden_states, total_seqlen, numseqs, cu_seqlens)
+        mixed, _attentions, _cache = self.fla(hidden_states=batched)
+
+        out = torch.zeros_like(hidden_states)
+        out[:total_seqlen] = mixed.reshape(total_seqlen, self.hidden_size).to(hidden_states.dtype)
+        return out
+
+
 class SpectreAttention(nn.Module):
     """SPECTRE-style FFT token mixer with PrefixLM-safe local masking.
 

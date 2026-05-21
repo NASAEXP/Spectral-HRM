@@ -66,4 +66,25 @@ Then we can add the actual FLA-backed model path.
 
 ## Current Read
 
-Pending Colab run.
+Free Colab result from the FLA gate:
+
+```text
+status=ready
+fla_available=True
+triton_available=True
+gdn_import_ok=True
+```
+
+Tiny non-FLA GDN CUDA smoke also ran:
+
+| Variant | Mean Eval Loss | Peak VRAM | Train ms/step | Train tok/s |
+| --- | ---: | ---: | ---: | ---: |
+| `pom-sla` | 6.9171 | 330.6 MB | 69.69 | 2,755.1 |
+| `pom-deltanet` | 7.3621 | 333.9 MB | 217.19 | 884.0 |
+| `pom-gdn` | 7.3519 | 334.0 MB | 250.41 | 766.8 |
+
+Read:
+
+- Free Colab is good enough for the FLA/Triton gate.
+- The old local GDN path runs on Colab CUDA.
+- Next gate is Experiment 24, which adds the actual FLA-backed `pom-fla-gdn` candidate.
