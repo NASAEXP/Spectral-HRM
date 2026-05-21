@@ -35,3 +35,4 @@ Each experiment note should include:
 - Experiment 13 - Fourier Vocab Ordering
 - Experiment 14 - Tokenizer-Aware Vocab Ordering
 - Experiment 15 - Checkpoint Weight Memory Tradeoff
+- Experiment 16 - Locked Survival Stack

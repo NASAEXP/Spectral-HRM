@@ -140,6 +140,29 @@ def test_bias_scale_reorder_and_checkpoint_variants_set_knobs():
     assert checkpointed["vocab_head"]["checkpoint_weight"] is True
 
 
+def test_fourier_all_tied_vocab_bias_checkpoint_variant_sets_all_locked_knobs():
+    probe = _load_probe_module()
+
+    config = probe.make_config(
+        variant="fourier-all-tied-fourier-vocab-bias-checkpoint",
+        vocab_size=260,
+        seq_len=24,
+        hidden_size=64,
+        vocab_modes=80,
+        hidden_modes=32,
+        fourier_mode=32,
+    )
+
+    assert config["fourier_linear"]["target"] == "all"
+    assert config["vocab_head"] == {
+        "type": "tied_fourier",
+        "vocab_modes": 80,
+        "hidden_modes": 32,
+        "bias": True,
+        "checkpoint_weight": True,
+    }
+
+
 def test_learned_token_and_untied_variants_set_head_types():
     probe = _load_probe_module()
 

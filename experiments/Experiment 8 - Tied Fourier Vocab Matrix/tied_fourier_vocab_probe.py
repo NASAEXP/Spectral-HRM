@@ -48,6 +48,7 @@ def parse_variants(value: str) -> list[str]:
         "fourier-all-tied-fourier-vocab-fft-basis",
         "fourier-all-tied-fourier-vocab-bias",
         "fourier-all-tied-fourier-vocab-bias-fft-basis",
+        "fourier-all-tied-fourier-vocab-bias-checkpoint",
         "fourier-all-untied-fourier-vocab",
         "fourier-all-learned-token-fourier-vocab",
     }
@@ -112,6 +113,14 @@ def make_config(*,
             "vocab_modes": vocab_modes,
             "hidden_modes": hidden_modes,
             "bias": True,
+        }
+    elif variant == "fourier-all-tied-fourier-vocab-bias-checkpoint":
+        vocab_head = {
+            "type": "tied_fourier",
+            "vocab_modes": vocab_modes,
+            "hidden_modes": hidden_modes,
+            "bias": True,
+            "checkpoint_weight": True,
         }
     elif variant in {"tied-fourier-vocab-bias-fft-basis", "fourier-all-tied-fourier-vocab-bias-fft-basis"}:
         vocab_head = {
