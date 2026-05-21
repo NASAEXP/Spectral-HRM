@@ -687,6 +687,16 @@ class DeltaNetAttention(nn.Module):
         return self.o_proj(out)
 
 
+class GatedDeltaNetAttention(DeltaNetAttention):
+    """Exact gated-delta update variant used by GDN-style recurrences."""
+
+    def _update_state(self, state: Tensor, k_t: Tensor, v_t: Tensor, beta_t: Tensor, decay_t: Tensor) -> Tensor:
+        prediction = torch.einsum("hd,hde->he", k_t, state)
+        residual = v_t - decay_t[:, None] * prediction
+        update = torch.einsum("hd,he->hde", k_t, residual)
+        return decay_t[:, None, None] * state + beta_t[:, None, None] * update
+
+
 class SpectreAttention(nn.Module):
     """SPECTRE-style FFT token mixer with PrefixLM-safe local masking.
 

@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from torch import Tensor, nn
 from pydantic import BaseModel, Field
 
-from models.layers import SwiGLU, AttnType, Attention, DeltaNetAttention, PoMAttention, SLAAttention, SpectreAttention, Cache, RotaryEmbedding, find_multiple
+from models.layers import SwiGLU, AttnType, Attention, DeltaNetAttention, GatedDeltaNetAttention, PoMAttention, SLAAttention, SpectreAttention, Cache, RotaryEmbedding, find_multiple
 
 
 class InitConfig(BaseModel):
@@ -44,7 +44,7 @@ class TransformerConfig(BaseModel):
 
     pos_emb_type: Literal["rope", "none"]
     rope_theta: Optional[float] = None
-    token_mixer: Literal["attention", "spectre", "pom", "sla", "deltanet", "precond_deltanet"] = "attention"
+    token_mixer: Literal["attention", "spectre", "pom", "sla", "deltanet", "precond_deltanet", "gdn"] = "attention"
     spectre_num_buckets: int = 16
     spectre_gate_hidden: Optional[int] = None
     spectre_dropout: float = 0.0
@@ -114,6 +114,13 @@ class TransformerBlock(nn.Module):
             self.attn = DeltaNetAttention(
                 **attn_kwargs,
                 preconditioned=config.token_mixer == "precond_deltanet",
+                precond_squash=config.precond_squash,
+                deltanet_eps=config.deltanet_eps,
+            )
+        elif config.token_mixer == "gdn":
+            self.attn = GatedDeltaNetAttention(
+                **attn_kwargs,
+                preconditioned=False,
                 precond_squash=config.precond_squash,
                 deltanet_eps=config.deltanet_eps,
             )
