@@ -341,6 +341,98 @@ class Attention(nn.Module):
         return self.o_proj(attn_output)
 
 
+class PoMAttention(nn.Module):
+    """PoM-style polynomial token mixer with PrefixLM-safe masking.
+
+    This keeps the same call shape as Attention so it can act as the fast
+    L-level mixer. It mixes tokens through cumulative polynomial moments
+    instead of pairwise attention scores.
+    """
+
+    def __init__(self,
+                 hidden_size,
+                 head_dim,
+                 num_heads,
+                 num_key_value_heads,
+                 attn_type,
+                 init_std_in=None,
+                 init_std_out=None,
+                 fourier_linear=None,
+                 pom_order: int = 4,
+                 pom_dropout: float = 0.0,
+                 **kwargs):
+        super().__init__()
+        if hidden_size != head_dim * num_heads:
+            raise ValueError("PoMAttention requires hidden_size == head_dim * num_heads.")
+
+        self.hidden_size = hidden_size
+        self.head_dim = head_dim
+        self.num_heads = num_heads
+        self.num_key_value_heads = num_key_value_heads
+        self.attn_type = attn_type
+        self.order = max(1, int(pom_order))
+
+        self.v_proj = make_linear(hidden_size, hidden_size, bias=False, init_std=init_std_in, fourier_linear=fourier_linear, role="attention", **kwargs)
+        self.gate_proj = make_linear(hidden_size, hidden_size, bias=False, init_std=init_std_in, fourier_linear=fourier_linear, role="attention", **kwargs)
+        self.dropout = nn.Dropout(pom_dropout) if pom_dropout > 0 else nn.Identity()
+        self.o_proj = make_linear(hidden_size, hidden_size, bias=False, init_std=init_std_out, fourier_linear=fourier_linear, role="attention", **kwargs)
+
+    def _basis(self, seq_len: int, device: torch.device) -> Tensor:
+        if seq_len == 1:
+            pos = torch.zeros((1,), device=device, dtype=torch.float32)
+        else:
+            pos = torch.linspace(0.0, 1.0, seq_len, device=device, dtype=torch.float32)
+        return torch.stack([pos.pow(order) for order in range(self.order)], dim=-1)
+
+    def _mix_projected_sequence(self, v_seq: Tensor, prefix_len: int, output_dtype: torch.dtype) -> Tensor:
+        seq_len = v_seq.shape[0]
+        basis = self._basis(seq_len, device=v_seq.device)
+        values = v_seq.float()
+        weighted = basis.unsqueeze(-1) * values.unsqueeze(1)
+
+        denom = basis.cumsum(dim=0).clamp_min(1e-6)
+        summary = weighted.cumsum(dim=0) / denom.unsqueeze(-1)
+        mixed = (summary * basis.unsqueeze(-1)).sum(dim=1)
+
+        if self.attn_type == "prefixlm" and prefix_len > 0:
+            prefix_basis = basis[:prefix_len]
+            prefix_summary = weighted[:prefix_len].sum(dim=0) / prefix_basis.sum(dim=0).clamp_min(1e-6).unsqueeze(-1)
+            mixed[:prefix_len] = (prefix_summary.unsqueeze(0) * prefix_basis.unsqueeze(-1)).sum(dim=1)
+
+        return mixed.to(output_dtype)
+
+    def forward(self, hidden_states: Tensor, cos_sin: Optional[CosSin], cache: Optional[Cache] = None, cache_lengths: Optional[Tensor] = None, **seq_info) -> Tensor:
+        if cache is not None:
+            raise NotImplementedError("PoMAttention does not support cached generation yet.")
+        if hidden_states.dim() != 2:
+            raise NotImplementedError("PoMAttention currently supports packed [tokens, hidden] inputs only.")
+
+        total_seqlen = _tensor_item(seq_info.get("total_seqlen", hidden_states.shape[0]))
+        numseqs = _tensor_item(seq_info.get("numseqs", 1))
+        cu_seqlens = unwrap_tensor(seq_info.get("cu_seqlens", torch.tensor([0, total_seqlen], device=hidden_states.device)))
+        prefix_lens = unwrap_tensor(seq_info.get("prefix_lens", torch.tensor([0], device=hidden_states.device)))
+
+        out = torch.zeros_like(hidden_states)
+        values = self.v_proj(hidden_states)
+        gates = torch.sigmoid(self.gate_proj(hidden_states))
+
+        for seq_idx in range(numseqs):
+            start = int(cu_seqlens[seq_idx].item())
+            end = int(cu_seqlens[seq_idx + 1].item())
+            seq_len = end - start
+            if seq_len <= 0:
+                continue
+
+            prefix_len = min(int(prefix_lens[seq_idx].item()), seq_len) if self.attn_type == "prefixlm" else 0
+            mixed = self._mix_projected_sequence(values[start:end], prefix_len, hidden_states.dtype)
+            out[start:end] = self.dropout(gates[start:end] * mixed)
+
+        if total_seqlen < hidden_states.shape[0]:
+            out[total_seqlen:] = 0
+
+        return self.o_proj(out)
+
+
 class SpectreAttention(nn.Module):
     """SPECTRE-style FFT token mixer with PrefixLM-safe local masking.
 

@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from torch import Tensor, nn
 from pydantic import BaseModel, Field
 
-from models.layers import SwiGLU, AttnType, Attention, SpectreAttention, Cache, RotaryEmbedding, find_multiple
+from models.layers import SwiGLU, AttnType, Attention, PoMAttention, SpectreAttention, Cache, RotaryEmbedding, find_multiple
 
 
 class InitConfig(BaseModel):
@@ -44,10 +44,12 @@ class TransformerConfig(BaseModel):
 
     pos_emb_type: Literal["rope", "none"]
     rope_theta: Optional[float] = None
-    token_mixer: Literal["attention", "spectre"] = "attention"
+    token_mixer: Literal["attention", "spectre", "pom"] = "attention"
     spectre_num_buckets: int = 16
     spectre_gate_hidden: Optional[int] = None
     spectre_dropout: float = 0.0
+    pom_order: int = 4
+    pom_dropout: float = 0.0
     fourier_linear: FourierLinearConfig = Field(default_factory=FourierLinearConfig)
 
     # [Computed properties]
@@ -93,6 +95,12 @@ class TransformerBlock(nn.Module):
                 spectre_num_buckets=config.spectre_num_buckets,
                 spectre_gate_hidden=config.spectre_gate_hidden,
                 spectre_dropout=config.spectre_dropout,
+            )
+        elif config.token_mixer == "pom":
+            self.attn = PoMAttention(
+                **attn_kwargs,
+                pom_order=config.pom_order,
+                pom_dropout=config.pom_dropout,
             )
         else:
             self.attn = Attention(**attn_kwargs)
