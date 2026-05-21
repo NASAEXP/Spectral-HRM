@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from torch import Tensor, nn
 from pydantic import BaseModel, Field
 
-from models.layers import SwiGLU, AttnType, Attention, PoMAttention, SLAAttention, SpectreAttention, Cache, RotaryEmbedding, find_multiple
+from models.layers import SwiGLU, AttnType, Attention, DeltaNetAttention, PoMAttention, SLAAttention, SpectreAttention, Cache, RotaryEmbedding, find_multiple
 
 
 class InitConfig(BaseModel):
@@ -44,13 +44,15 @@ class TransformerConfig(BaseModel):
 
     pos_emb_type: Literal["rope", "none"]
     rope_theta: Optional[float] = None
-    token_mixer: Literal["attention", "spectre", "pom", "sla"] = "attention"
+    token_mixer: Literal["attention", "spectre", "pom", "sla", "deltanet", "precond_deltanet"] = "attention"
     spectre_num_buckets: int = 16
     spectre_gate_hidden: Optional[int] = None
     spectre_dropout: float = 0.0
     pom_order: int = 4
     pom_dropout: float = 0.0
     sla_eps: float = 1e-6
+    deltanet_eps: float = 1e-6
+    precond_squash: float = 1.5
     fourier_linear: FourierLinearConfig = Field(default_factory=FourierLinearConfig)
 
     # [Computed properties]
@@ -107,6 +109,13 @@ class TransformerBlock(nn.Module):
             self.attn = SLAAttention(
                 **attn_kwargs,
                 sla_eps=config.sla_eps,
+            )
+        elif config.token_mixer in {"deltanet", "precond_deltanet"}:
+            self.attn = DeltaNetAttention(
+                **attn_kwargs,
+                preconditioned=config.token_mixer == "precond_deltanet",
+                precond_squash=config.precond_squash,
+                deltanet_eps=config.deltanet_eps,
             )
         else:
             self.attn = Attention(**attn_kwargs)

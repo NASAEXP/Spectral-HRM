@@ -533,6 +533,160 @@ class SLAAttention(nn.Module):
         return self.o_proj(out)
 
 
+class DeltaNetAttention(nn.Module):
+    """Naive packed DeltaNet-style mixer for local H-level experiments.
+
+    The state learns a per-head key-to-value map online with the delta rule.
+    The preconditioned variant scales the write-side key by a bounded diagonal
+    factor, matching the useful implementation hook from preconditioned
+    DeltaNet/OSDN without pulling in custom kernels yet.
+    """
+
+    def __init__(self,
+                 hidden_size,
+                 head_dim,
+                 num_heads,
+                 num_key_value_heads,
+                 attn_type,
+                 init_std_in=None,
+                 init_std_out=None,
+                 fourier_linear=None,
+                 preconditioned: bool = False,
+                 precond_squash: float = 1.5,
+                 deltanet_eps: float = 1e-6,
+                 **kwargs):
+        super().__init__()
+        if hidden_size != head_dim * num_heads:
+            raise ValueError("DeltaNetAttention requires hidden_size == head_dim * num_heads.")
+        if num_key_value_heads != num_heads:
+            raise ValueError("DeltaNetAttention currently requires num_key_value_heads == num_heads.")
+
+        self.hidden_size = hidden_size
+        self.head_dim = head_dim
+        self.num_heads = num_heads
+        self.num_key_value_heads = num_key_value_heads
+        self.attn_type = attn_type
+        self.preconditioned = preconditioned
+        self.precond_squash = float(precond_squash)
+        self.eps = float(deltanet_eps)
+
+        self.qkv_proj = make_linear(hidden_size, head_dim, batch_out_features=(3 * num_heads,),
+                                    bias=False, init_std=init_std_in, fourier_linear=fourier_linear, role="attention", **kwargs)
+        self.beta_proj = LinearInit(hidden_size, num_heads, bias=True, init_std=init_std_in, **kwargs)
+        self.decay_proj = LinearInit(hidden_size, num_heads, bias=True, init_std=init_std_in, **kwargs)
+        self.gate_proj = make_linear(hidden_size, hidden_size, bias=False, init_std=init_std_in, fourier_linear=fourier_linear, role="attention", **kwargs)
+        self.precond_proj = None
+        if self.preconditioned:
+            self.precond_proj = LinearInit(hidden_size, num_heads * head_dim, bias=True, init_std=init_std_in, **kwargs)
+        self.o_proj = make_linear(hidden_size, hidden_size, bias=False, init_std=init_std_out, fourier_linear=fourier_linear, role="attention", **kwargs)
+
+        with torch.no_grad():
+            if self.beta_proj.bias is not None:
+                self.beta_proj.bias.fill_(-1.0)
+            if self.decay_proj.bias is not None:
+                self.decay_proj.bias.fill_(4.0)
+            if self.precond_proj is not None and self.precond_proj.bias is not None:
+                self.precond_proj.bias.zero_()
+
+    def _feature_map(self, x: Tensor) -> Tensor:
+        return F.normalize(F.elu(x.float()) + 1.0, p=2, dim=-1, eps=self.eps)
+
+    def _preconditioner(self, raw: Tensor) -> Tensor:
+        log_bound = math.log(self.precond_squash)
+        return torch.exp(log_bound * torch.tanh(raw.float()))
+
+    def _update_state(self, state: Tensor, k_t: Tensor, v_t: Tensor, beta_t: Tensor, decay_t: Tensor) -> Tensor:
+        prediction = torch.einsum("hd,hde->he", k_t, state)
+        residual = v_t - prediction
+        update = torch.einsum("hd,he->hde", k_t, residual)
+        return decay_t[:, None, None] * state + beta_t[:, None, None] * update
+
+    def _read_state(self, state: Tensor, q_t: Tensor) -> Tensor:
+        return torch.einsum("hd,hde->he", q_t, state)
+
+    def _mix_sequence(self,
+                      q_seq: Tensor,
+                      k_seq: Tensor,
+                      v_seq: Tensor,
+                      beta_seq: Tensor,
+                      decay_seq: Tensor,
+                      precond_seq: Optional[Tensor],
+                      prefix_len: int,
+                      output_dtype: torch.dtype) -> Tensor:
+        seq_len = q_seq.shape[0]
+        state = torch.zeros((self.num_heads, self.head_dim, self.head_dim), device=q_seq.device, dtype=torch.float32)
+        out = torch.zeros((seq_len, self.num_heads, self.head_dim), device=q_seq.device, dtype=torch.float32)
+        write_keys = k_seq if precond_seq is None else k_seq * precond_seq
+
+        if self.attn_type == "prefixlm" and prefix_len > 0:
+            for pos in range(prefix_len):
+                state = self._update_state(state, write_keys[pos], v_seq[pos], beta_seq[pos], decay_seq[pos])
+            out[:prefix_len] = torch.einsum("shd,hde->she", q_seq[:prefix_len], state)
+            start = prefix_len
+        else:
+            start = 0
+
+        for pos in range(start, seq_len):
+            state = self._update_state(state, write_keys[pos], v_seq[pos], beta_seq[pos], decay_seq[pos])
+            out[pos] = self._read_state(state, q_seq[pos])
+
+        return out.to(output_dtype)
+
+    def forward(self, hidden_states: Tensor, cos_sin: Optional[CosSin], cache: Optional[Cache] = None, cache_lengths: Optional[Tensor] = None, **seq_info) -> Tensor:
+        if cache is not None:
+            raise NotImplementedError("DeltaNetAttention does not support cached generation yet.")
+        if hidden_states.dim() != 2:
+            raise NotImplementedError("DeltaNetAttention currently supports packed [tokens, hidden] inputs only.")
+
+        total_seqlen = _tensor_item(seq_info.get("total_seqlen", hidden_states.shape[0]))
+        numseqs = _tensor_item(seq_info.get("numseqs", 1))
+        cu_seqlens = unwrap_tensor(seq_info.get("cu_seqlens", torch.tensor([0, total_seqlen], device=hidden_states.device)))
+        prefix_lens = unwrap_tensor(seq_info.get("prefix_lens", torch.tensor([0], device=hidden_states.device)))
+
+        qkv = self.qkv_proj(hidden_states)
+        qkv = rearrange(qkv, "s (h hd) -> s h hd", h=3 * self.num_heads)
+        query, key, value = qkv.split((self.num_heads, self.num_heads, self.num_heads), dim=1)
+        query = self._feature_map(query)
+        key = self._feature_map(key)
+        value = value.float()
+        beta = torch.sigmoid(self.beta_proj(hidden_states)).float()
+        decay = torch.sigmoid(self.decay_proj(hidden_states)).float()
+        gate = torch.sigmoid(self.gate_proj(hidden_states))
+
+        precond = None
+        if self.precond_proj is not None:
+            raw_precond = self.precond_proj(hidden_states)
+            raw_precond = rearrange(raw_precond, "s (h hd) -> s h hd", h=self.num_heads)
+            precond = self._preconditioner(raw_precond)
+
+        out = torch.zeros_like(hidden_states)
+        for seq_idx in range(numseqs):
+            start = int(cu_seqlens[seq_idx].item())
+            end = int(cu_seqlens[seq_idx + 1].item())
+            seq_len = end - start
+            if seq_len <= 0:
+                continue
+
+            prefix_len = min(int(prefix_lens[seq_idx].item()), seq_len) if self.attn_type == "prefixlm" else 0
+            mixed = self._mix_sequence(
+                query[start:end],
+                key[start:end],
+                value[start:end],
+                beta[start:end],
+                decay[start:end],
+                precond[start:end] if precond is not None else None,
+                prefix_len,
+                hidden_states.dtype,
+            )
+            mixed = rearrange(mixed, "s h hd -> s (h hd)")
+            out[start:end] = gate[start:end] * mixed
+
+        if total_seqlen < hidden_states.shape[0]:
+            out[total_seqlen:] = 0
+
+        return self.o_proj(out)
+
+
 class SpectreAttention(nn.Module):
     """SPECTRE-style FFT token mixer with PrefixLM-safe local masking.
 

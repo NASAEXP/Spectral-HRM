@@ -39,3 +39,4 @@ Each experiment note should include:
 - Experiment 17 - Fast Slow Mixers
 - Experiment 18 - H-Level SLA
 - Experiment 19 - Long Context H-Level Validation
+- Experiment 20 - DeltaNet H-Level Candidates
