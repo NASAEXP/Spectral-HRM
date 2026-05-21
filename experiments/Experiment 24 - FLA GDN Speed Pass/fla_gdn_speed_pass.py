@@ -85,7 +85,10 @@ def make_config(*,
         fourier_mode=fourier_mode,
     )
     config["token_mixer"] = spec["L_mixer"]
-    config["H_override"] = dict(config.get("H_override", {})) | {"token_mixer": spec["H_mixer"]}
+    h_override = dict(config.get("H_override", {})) | {"token_mixer": spec["H_mixer"]}
+    if spec["H_mixer"] == "fla_gdn":
+        h_override["fourier_linear"] = dict(config["fourier_linear"]) | {"enabled": False}
+    config["H_override"] = h_override
     config["pom_order"] = pom_order
     return config
 

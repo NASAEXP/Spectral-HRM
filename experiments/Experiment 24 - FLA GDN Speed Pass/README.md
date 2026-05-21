@@ -15,12 +15,15 @@ context = 48x48
 - Added `FLAGatedDeltaNetAttention`, a thin adapter from HRM's packed `[tokens, hidden]` format to FLA's `[batch, seq, hidden]` format.
 - Added `token_mixer="fla_gdn"`.
 - Added this runner for Colab/Linux speed comparison.
+- Disabled FourierLinear only inside the `pom-fla-gdn` H-level override, because FLA uses its own dense projections.
 
 ## Important Note
 
 This wrapper currently requires equal-length packed sequences. That matches our current experiment runner, where every batch uses the same `prefix_len + causal_len`.
 
 It also uses FLA's causal GDN behavior for the whole sequence. That means it is a speed-path candidate first; quality must be measured against `pom-sla` and local `pom-gdn`.
+
+For `pom-fla-gdn`, the L-level and vocab stack still use the Fourier survival preset. The H-level FLA mixer does not, because the FLA layer owns its internal projection weights.
 
 ## How To Run On Colab
 

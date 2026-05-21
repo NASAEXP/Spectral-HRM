@@ -38,3 +38,21 @@ def test_fla_gdn_config_keeps_pom_l_level():
 
     assert config["token_mixer"] == "pom"
     assert config["H_override"]["token_mixer"] == "fla_gdn"
+
+
+def test_fla_gdn_config_disables_h_level_fourier_linear():
+    probe = _load_probe_module()
+
+    config = probe.make_config(
+        variant="pom-fla-gdn",
+        vocab_size=260,
+        seq_len=96,
+        hidden_size=64,
+        vocab_modes=128,
+        hidden_modes=32,
+        fourier_mode=32,
+        pom_order=4,
+    )
+
+    assert config["fourier_linear"]["enabled"] is True
+    assert config["H_override"]["fourier_linear"]["enabled"] is False
