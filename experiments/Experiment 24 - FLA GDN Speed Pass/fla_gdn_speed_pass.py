@@ -104,13 +104,17 @@ def count_mixers(model: torch.nn.Module) -> dict[str, int]:
 
 def compute_speed_metrics(*,
                           train_elapsed_s: float,
+                          warmup_elapsed_s: float,
                           steps: int,
+                          warmup_steps: int,
                           numseqs: int,
                           prefix_len: int,
                           causal_len: int) -> dict[str, float]:
     tokens_per_step = float(numseqs * (prefix_len + causal_len))
     if steps <= 0 or train_elapsed_s <= 0:
         return {
+            "warmup_elapsed_s": warmup_elapsed_s,
+            "warmup_steps": float(warmup_steps),
             "train_elapsed_s": train_elapsed_s,
             "ms_per_step": 0.0,
             "steps_per_second": 0.0,
@@ -118,6 +122,8 @@ def compute_speed_metrics(*,
         }
 
     return {
+        "warmup_elapsed_s": warmup_elapsed_s,
+        "warmup_steps": float(warmup_steps),
         "train_elapsed_s": train_elapsed_s,
         "ms_per_step": (train_elapsed_s * 1000.0) / float(steps),
         "steps_per_second": float(steps) / train_elapsed_s,
@@ -161,6 +167,7 @@ def train_once(*,
                hidden_modes: int,
                fourier_mode: int,
                pom_order: int,
+               warmup_steps: int,
                token_permutation: torch.Tensor,
                vocab_size: int) -> dict[str, float | int | str]:
     torch.manual_seed(seed)
@@ -190,9 +197,22 @@ def train_once(*,
     start = time.perf_counter()
     first_eval = evaluate(model, eval_tokens, device=device, batches=eval_batches, numseqs=numseqs, prefix_len=prefix_len, causal_len=causal_len)
     last_train_loss = first_eval
+    warmup_start = time.perf_counter()
+    for warmup_step in range(warmup_steps):
+        batch = HOLDOUT.TEXT_PROBE.make_prefixlm_batch(train_tokens, offset=warmup_step * numseqs * total_len, numseqs=numseqs, prefix_len=prefix_len, causal_len=causal_len, device=device)
+        optimizer.zero_grad(set_to_none=True)
+        _carry, loss, _metrics = model(carry=None, batch=batch, bp_steps=2)
+        loss.backward()
+        optimizer.step()
+        last_train_loss = float(loss.detach().cpu())
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+    warmup_elapsed_s = time.perf_counter() - warmup_start
+
     train_start = time.perf_counter()
     for step in range(steps):
-        batch = HOLDOUT.TEXT_PROBE.make_prefixlm_batch(train_tokens, offset=step * numseqs * total_len, numseqs=numseqs, prefix_len=prefix_len, causal_len=causal_len, device=device)
+        offset = (warmup_steps + step) * numseqs * total_len
+        batch = HOLDOUT.TEXT_PROBE.make_prefixlm_batch(train_tokens, offset=offset, numseqs=numseqs, prefix_len=prefix_len, causal_len=causal_len, device=device)
         optimizer.zero_grad(set_to_none=True)
         _carry, loss, _metrics = model(carry=None, batch=batch, bp_steps=2)
         loss.backward()
@@ -214,7 +234,9 @@ def train_once(*,
     spec = VARIANT_SPECS[variant]
     speed_metrics = compute_speed_metrics(
         train_elapsed_s=train_elapsed_s,
+        warmup_elapsed_s=warmup_elapsed_s,
         steps=steps,
+        warmup_steps=warmup_steps,
         numseqs=numseqs,
         prefix_len=prefix_len,
         causal_len=causal_len,
@@ -250,6 +272,7 @@ def summarize(rows: list[dict[str, float | int | str]]) -> dict[str, dict[str, f
         peak_vram = [float(row["peak_vram_mb"]) for row in variant_rows]
         elapsed = [float(row["elapsed_s"]) for row in variant_rows]
         train_elapsed = [float(row["train_elapsed_s"]) for row in variant_rows]
+        warmup_elapsed = [float(row["warmup_elapsed_s"]) for row in variant_rows]
         ms_per_step = [float(row["ms_per_step"]) for row in variant_rows]
         tokens_per_second = [float(row["tokens_per_second"]) for row in variant_rows]
         result[variant] = {
@@ -259,6 +282,7 @@ def summarize(rows: list[dict[str, float | int | str]]) -> dict[str, dict[str, f
             "mean_num_params": sum(params) / len(params),
             "mean_peak_vram_mb": sum(peak_vram) / len(peak_vram),
             "mean_elapsed_s": sum(elapsed) / len(elapsed),
+            "mean_warmup_elapsed_s": sum(warmup_elapsed) / len(warmup_elapsed),
             "mean_train_elapsed_s": sum(train_elapsed) / len(train_elapsed),
             "mean_ms_per_step": sum(ms_per_step) / len(ms_per_step),
             "mean_tokens_per_second": sum(tokens_per_second) / len(tokens_per_second),
@@ -278,6 +302,8 @@ def format_row(row: dict[str, float | int | str]) -> str:
         f"fla_gdn={int(float(row['fla_gdn_modules']))}, "
         f"peak_vram_mb={float(row['peak_vram_mb']):.1f}, "
         f"elapsed_s={float(row['elapsed_s']):.2f}, "
+        f"warmup_steps={int(float(row['warmup_steps']))}, "
+        f"warmup_elapsed_s={float(row['warmup_elapsed_s']):.2f}, "
         f"train_elapsed_s={float(row['train_elapsed_s']):.2f}, "
         f"ms_per_step={float(row['ms_per_step']):.2f}, "
         f"tokens_per_second={float(row['tokens_per_second']):.1f}"
@@ -301,6 +327,7 @@ def main() -> None:
     parser.add_argument("--hidden-modes", type=int, default=64)
     parser.add_argument("--fourier-mode", type=int, default=64)
     parser.add_argument("--pom-order", type=int, default=4)
+    parser.add_argument("--warmup-steps", type=int, default=1)
     args = parser.parse_args()
 
     seeds = HOLDOUT.parse_int_list(args.seeds)
@@ -313,7 +340,7 @@ def main() -> None:
     id_to_token = TOKENIZER_ORDERING.load_id_to_token(args.tokenizer_path)
     vocab_size = len(id_to_token)
     total_len = args.prefix_len + args.causal_len
-    tokens_needed = total_len * args.numseqs * (args.steps + args.eval_batches + 8)
+    tokens_needed = total_len * args.numseqs * (args.steps + args.warmup_steps + args.eval_batches + 8)
     tokens = TOKENIZER_ORDERING.load_tokenizer_tokens(args.tokenizer_path, min_tokens=tokens_needed)
     train_tokens, eval_tokens = HOLDOUT.split_train_eval_tokens(tokens, eval_fraction=args.eval_fraction)
     token_permutation = TOKENIZER_ORDERING.make_token_permutation("token_frequency", tokens=train_tokens, id_to_token=id_to_token)
@@ -324,6 +351,7 @@ def main() -> None:
     print(f"tokens={tokens.numel():,}, train={train_tokens.numel():,}, eval={eval_tokens.numel():,}, steps={args.steps}, seeds={seeds}")
     print(f"context={args.prefix_len}x{args.causal_len}, hidden_size={args.hidden_size}, vocab_modes={args.vocab_modes}, hidden_modes={args.hidden_modes}, fourier_mode={args.fourier_mode}")
     print(f"pom_order={args.pom_order}, ordering=token_frequency")
+    print(f"warmup_steps={args.warmup_steps}")
     print(f"variants={variants}")
 
     rows: list[dict[str, float | int | str]] = []
@@ -345,6 +373,7 @@ def main() -> None:
                 hidden_modes=args.hidden_modes,
                 fourier_mode=args.fourier_mode,
                 pom_order=args.pom_order,
+                warmup_steps=args.warmup_steps,
                 token_permutation=token_permutation,
                 vocab_size=vocab_size,
             )
@@ -360,6 +389,7 @@ def main() -> None:
             f"mean_params={int(float(item['mean_num_params'])):,}, "
             f"mean_peak_vram_mb={float(item['mean_peak_vram_mb']):.1f}, "
             f"mean_elapsed_s={float(item['mean_elapsed_s']):.2f}, "
+            f"mean_warmup_elapsed_s={float(item['mean_warmup_elapsed_s']):.2f}, "
             f"mean_train_elapsed_s={float(item['mean_train_elapsed_s']):.2f}, "
             f"mean_ms_per_step={float(item['mean_ms_per_step']):.2f}, "
             f"mean_tokens_per_second={float(item['mean_tokens_per_second']):.1f}"

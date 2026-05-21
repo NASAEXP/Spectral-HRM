@@ -56,3 +56,23 @@ def test_fla_gdn_config_disables_h_level_fourier_linear():
 
     assert config["fourier_linear"]["enabled"] is True
     assert config["H_override"]["fourier_linear"]["enabled"] is False
+
+
+def test_speed_metrics_separate_warmup_from_measured_steps():
+    probe = _load_probe_module()
+
+    metrics = probe.compute_speed_metrics(
+        train_elapsed_s=2.0,
+        warmup_elapsed_s=10.0,
+        steps=4,
+        warmup_steps=2,
+        numseqs=2,
+        prefix_len=3,
+        causal_len=5,
+    )
+
+    assert metrics["warmup_elapsed_s"] == 10.0
+    assert metrics["warmup_steps"] == 2
+    assert metrics["train_elapsed_s"] == 2.0
+    assert metrics["ms_per_step"] == 500.0
+    assert metrics["tokens_per_second"] == 32.0

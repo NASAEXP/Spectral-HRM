@@ -30,13 +30,13 @@ For `pom-fla-gdn`, the L-level and vocab stack still use the Fourier survival pr
 After the Experiment 22 cell prints `status=ready`, run:
 
 ```python
-!python "experiments/Experiment 24 - FLA GDN Speed Pass/fla_gdn_speed_pass.py" --steps 5 --seeds 1 --device cuda
+!python "experiments/Experiment 24 - FLA GDN Speed Pass/fla_gdn_speed_pass.py" --steps 5 --warmup-steps 1 --seeds 1 --device cuda
 ```
 
 If that passes, run the 40-step comparison:
 
 ```python
-!python "experiments/Experiment 24 - FLA GDN Speed Pass/fla_gdn_speed_pass.py" --steps 40 --seeds 1,2,3 --device cuda
+!python "experiments/Experiment 24 - FLA GDN Speed Pass/fla_gdn_speed_pass.py" --steps 40 --warmup-steps 1 --seeds 1,2,3 --device cuda
 ```
 
 ## Variants
