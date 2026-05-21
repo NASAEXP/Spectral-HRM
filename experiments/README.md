@@ -42,3 +42,4 @@ Each experiment note should include:
 - Experiment 20 - DeltaNet H-Level Candidates
 - Experiment 21 - Gated DeltaNet H-Level
 - Experiment 22 - FLA GDN Kernel Probe
+- Experiment 23 - Free Colab FLA Probe
