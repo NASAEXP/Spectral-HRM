@@ -104,6 +104,29 @@ def count_mixers(model: torch.nn.Module) -> dict[str, int]:
     }
 
 
+def compute_speed_metrics(*,
+                          train_elapsed_s: float,
+                          steps: int,
+                          numseqs: int,
+                          prefix_len: int,
+                          causal_len: int) -> dict[str, float]:
+    tokens_per_step = float(numseqs * (prefix_len + causal_len))
+    if steps <= 0 or train_elapsed_s <= 0:
+        return {
+            "train_elapsed_s": train_elapsed_s,
+            "ms_per_step": 0.0,
+            "steps_per_second": 0.0,
+            "tokens_per_second": 0.0,
+        }
+
+    return {
+        "train_elapsed_s": train_elapsed_s,
+        "ms_per_step": (train_elapsed_s * 1000.0) / float(steps),
+        "steps_per_second": float(steps) / train_elapsed_s,
+        "tokens_per_second": (float(steps) * tokens_per_step) / train_elapsed_s,
+    }
+
+
 @torch.no_grad()
 def evaluate(model: torch.nn.Module,
              tokens: torch.Tensor,
@@ -171,6 +194,7 @@ def train_once(*,
     start = time.perf_counter()
     first_eval = evaluate(model, eval_tokens, device=device, batches=eval_batches, numseqs=numseqs, prefix_len=prefix_len, causal_len=causal_len)
     last_train_loss = first_eval
+    train_start = time.perf_counter()
     for step in range(steps):
         batch = HOLDOUT.TEXT_PROBE.make_prefixlm_batch(train_tokens, offset=step * numseqs * total_len, numseqs=numseqs, prefix_len=prefix_len, causal_len=causal_len, device=device)
         optimizer.zero_grad(set_to_none=True)
@@ -178,6 +202,9 @@ def train_once(*,
         loss.backward()
         optimizer.step()
         last_train_loss = float(loss.detach().cpu())
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+    train_elapsed_s = time.perf_counter() - train_start
 
     final_eval = evaluate(model, eval_tokens, device=device, batches=eval_batches, numseqs=numseqs, prefix_len=prefix_len, causal_len=causal_len)
 
@@ -189,6 +216,13 @@ def train_once(*,
 
     mixers = count_mixers(model)
     spec = VARIANT_SPECS[variant]
+    speed_metrics = compute_speed_metrics(
+        train_elapsed_s=train_elapsed_s,
+        steps=steps,
+        numseqs=numseqs,
+        prefix_len=prefix_len,
+        causal_len=causal_len,
+    )
     return {
         "variant": variant,
         "seed": seed,
@@ -203,6 +237,7 @@ def train_once(*,
         "spectre_modules": float(mixers["spectre_modules"]),
         "peak_vram_mb": peak_vram_mb,
         "elapsed_s": time.perf_counter() - start,
+        **speed_metrics,
     }
 
 
@@ -217,6 +252,10 @@ def summarize(rows: list[dict[str, float | int | str]]) -> dict[str, dict[str, f
         params = [float(row["num_params"]) for row in variant_rows]
         peak_vram = [float(row["peak_vram_mb"]) for row in variant_rows]
         elapsed = [float(row["elapsed_s"]) for row in variant_rows]
+        train_elapsed = [float(row["train_elapsed_s"]) for row in variant_rows]
+        ms_per_step = [float(row["ms_per_step"]) for row in variant_rows]
+        steps_per_second = [float(row["steps_per_second"]) for row in variant_rows]
+        tokens_per_second = [float(row["tokens_per_second"]) for row in variant_rows]
         result[variant] = {
             "runs": len(variant_rows),
             "mean_final_eval": sum(evals) / len(evals),
@@ -224,6 +263,10 @@ def summarize(rows: list[dict[str, float | int | str]]) -> dict[str, dict[str, f
             "mean_num_params": sum(params) / len(params),
             "mean_peak_vram_mb": sum(peak_vram) / len(peak_vram),
             "mean_elapsed_s": sum(elapsed) / len(elapsed),
+            "mean_train_elapsed_s": sum(train_elapsed) / len(train_elapsed),
+            "mean_ms_per_step": sum(ms_per_step) / len(ms_per_step),
+            "mean_steps_per_second": sum(steps_per_second) / len(steps_per_second),
+            "mean_tokens_per_second": sum(tokens_per_second) / len(tokens_per_second),
         }
     return result
 
@@ -238,7 +281,10 @@ def format_row(row: dict[str, float | int | str]) -> str:
         f"pom={int(float(row['pom_modules']))}, "
         f"spectre={int(float(row['spectre_modules']))}, "
         f"peak_vram_mb={float(row['peak_vram_mb']):.1f}, "
-        f"elapsed_s={float(row['elapsed_s']):.2f}"
+        f"elapsed_s={float(row['elapsed_s']):.2f}, "
+        f"train_elapsed_s={float(row['train_elapsed_s']):.2f}, "
+        f"ms_per_step={float(row['ms_per_step']):.2f}, "
+        f"tokens_per_second={float(row['tokens_per_second']):.1f}"
     )
 
 
@@ -319,7 +365,10 @@ def main() -> None:
             f"stdev_final_eval={float(item['stdev_final_eval']):.4f}, "
             f"mean_params={int(float(item['mean_num_params'])):,}, "
             f"mean_peak_vram_mb={float(item['mean_peak_vram_mb']):.1f}, "
-            f"mean_elapsed_s={float(item['mean_elapsed_s']):.2f}"
+            f"mean_elapsed_s={float(item['mean_elapsed_s']):.2f}, "
+            f"mean_train_elapsed_s={float(item['mean_train_elapsed_s']):.2f}, "
+            f"mean_ms_per_step={float(item['mean_ms_per_step']):.2f}, "
+            f"mean_tokens_per_second={float(item['mean_tokens_per_second']):.1f}"
         )
 
 

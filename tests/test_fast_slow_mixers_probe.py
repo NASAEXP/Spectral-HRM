@@ -41,3 +41,19 @@ def test_fast_slow_config_sets_l_and_h_mixers():
     assert config["H_override"]["token_mixer"] == "spectre"
     assert config["pom_order"] == 4
     assert config["spectre_num_buckets"] == 8
+
+
+def test_compute_speed_metrics_uses_training_loop_time():
+    probe = _load_probe_module()
+
+    metrics = probe.compute_speed_metrics(
+        train_elapsed_s=2.0,
+        steps=40,
+        numseqs=2,
+        prefix_len=12,
+        causal_len=12,
+    )
+
+    assert metrics["ms_per_step"] == 50.0
+    assert metrics["steps_per_second"] == 20.0
+    assert metrics["tokens_per_second"] == 960.0
