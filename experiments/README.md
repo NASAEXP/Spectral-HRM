@@ -37,3 +37,4 @@ Each experiment note should include:
 - Experiment 15 - Checkpoint Weight Memory Tradeoff
 - Experiment 16 - Locked Survival Stack
 - Experiment 17 - Fast Slow Mixers
+- Experiment 18 - H-Level SLA

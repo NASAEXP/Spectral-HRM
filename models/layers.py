@@ -433,6 +433,106 @@ class PoMAttention(nn.Module):
         return self.o_proj(out)
 
 
+class SLAAttention(nn.Module):
+    """SLA-style linear attention with softmax competition across heads.
+
+    This is a small packed PrefixLM implementation for experiments. It keeps
+    the linear attention backbone but lifts the softmax to the head axis so
+    heads compete as coarse slots.
+    """
+
+    def __init__(self,
+                 hidden_size,
+                 head_dim,
+                 num_heads,
+                 num_key_value_heads,
+                 attn_type,
+                 init_std_in=None,
+                 init_std_out=None,
+                 fourier_linear=None,
+                 sla_eps: float = 1e-6,
+                 **kwargs):
+        super().__init__()
+        if hidden_size != head_dim * num_heads:
+            raise ValueError("SLAAttention requires hidden_size == head_dim * num_heads.")
+        if num_key_value_heads != num_heads:
+            raise ValueError("SLAAttention currently requires num_key_value_heads == num_heads.")
+
+        self.hidden_size = hidden_size
+        self.head_dim = head_dim
+        self.num_heads = num_heads
+        self.num_key_value_heads = num_key_value_heads
+        self.attn_type = attn_type
+        self.eps = float(sla_eps)
+
+        self.qkv_proj = make_linear(hidden_size, head_dim, batch_out_features=(3 * num_heads,),
+                                    bias=False, init_std=init_std_in, fourier_linear=fourier_linear, role="attention", **kwargs)
+        self.head_gate_proj = LinearInit(hidden_size, num_heads, bias=True, init_std=init_std_in, **kwargs)
+        self.o_proj = make_linear(hidden_size, hidden_size, bias=False, init_std=init_std_out, fourier_linear=fourier_linear, role="attention", **kwargs)
+
+    def _feature_map(self, x: Tensor) -> Tensor:
+        return F.elu(x.float()) + 1.0
+
+    def _head_competition(self, logits: Tensor) -> Tensor:
+        return torch.softmax(logits.float(), dim=-1).to(logits.dtype)
+
+    def _linear_attention(self, q_seq: Tensor, k_seq: Tensor, v_seq: Tensor, prefix_len: int, output_dtype: torch.dtype) -> Tensor:
+        q = self._feature_map(q_seq)
+        k = self._feature_map(k_seq)
+        v = v_seq.float()
+
+        kv = torch.einsum("shd,she->shde", k, v)
+        kv_cum = kv.cumsum(dim=0)
+        k_cum = k.cumsum(dim=0)
+
+        numerator = torch.einsum("shd,shde->she", q, kv_cum)
+        denominator = torch.einsum("shd,shd->sh", q, k_cum).clamp_min(self.eps)
+        mixed = numerator / denominator.unsqueeze(-1)
+
+        if self.attn_type == "prefixlm" and prefix_len > 0:
+            prefix_kv = kv[:prefix_len].sum(dim=0)
+            prefix_k = k[:prefix_len].sum(dim=0)
+            prefix_numerator = torch.einsum("shd,hde->she", q[:prefix_len], prefix_kv)
+            prefix_denominator = torch.einsum("shd,hd->sh", q[:prefix_len], prefix_k).clamp_min(self.eps)
+            mixed[:prefix_len] = prefix_numerator / prefix_denominator.unsqueeze(-1)
+
+        return mixed.to(output_dtype)
+
+    def forward(self, hidden_states: Tensor, cos_sin: Optional[CosSin], cache: Optional[Cache] = None, cache_lengths: Optional[Tensor] = None, **seq_info) -> Tensor:
+        if cache is not None:
+            raise NotImplementedError("SLAAttention does not support cached generation yet.")
+        if hidden_states.dim() != 2:
+            raise NotImplementedError("SLAAttention currently supports packed [tokens, hidden] inputs only.")
+
+        total_seqlen = _tensor_item(seq_info.get("total_seqlen", hidden_states.shape[0]))
+        numseqs = _tensor_item(seq_info.get("numseqs", 1))
+        cu_seqlens = unwrap_tensor(seq_info.get("cu_seqlens", torch.tensor([0, total_seqlen], device=hidden_states.device)))
+        prefix_lens = unwrap_tensor(seq_info.get("prefix_lens", torch.tensor([0], device=hidden_states.device)))
+
+        qkv = self.qkv_proj(hidden_states)
+        qkv = rearrange(qkv, "s (h hd) -> s h hd", h=3 * self.num_heads)
+        query, key, value = qkv.split((self.num_heads, self.num_heads, self.num_heads), dim=1)
+        head_weights = self._head_competition(self.head_gate_proj(hidden_states))
+
+        out = torch.zeros_like(hidden_states)
+        for seq_idx in range(numseqs):
+            start = int(cu_seqlens[seq_idx].item())
+            end = int(cu_seqlens[seq_idx + 1].item())
+            seq_len = end - start
+            if seq_len <= 0:
+                continue
+
+            prefix_len = min(int(prefix_lens[seq_idx].item()), seq_len) if self.attn_type == "prefixlm" else 0
+            mixed = self._linear_attention(query[start:end], key[start:end], value[start:end], prefix_len, hidden_states.dtype)
+            gated = mixed * head_weights[start:end].unsqueeze(-1) * float(self.num_heads)
+            out[start:end] = rearrange(gated, "s h hd -> s (h hd)")
+
+        if total_seqlen < hidden_states.shape[0]:
+            out[total_seqlen:] = 0
+
+        return self.o_proj(out)
+
+
 class SpectreAttention(nn.Module):
     """SPECTRE-style FFT token mixer with PrefixLM-safe local masking.
 
