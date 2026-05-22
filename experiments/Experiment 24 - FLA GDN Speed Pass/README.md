@@ -89,3 +89,33 @@ Read:
 - Its first seed paid the big Triton compile cost, so mean warmup is still high at `91.01s`.
 - It uses more params than the local mixers because FLA GDN owns dense internal projections.
 - Current read: `pom-fla-gdn` is now worth keeping as the H-level speed/quality candidate, but we need a larger-context run before locking it.
+
+Free Colab T4 larger-context result:
+
+```python
+!python "experiments/Experiment 24 - FLA GDN Speed Pass/fla_gdn_speed_pass.py" \
+  --steps 40 \
+  --warmup-steps 1 \
+  --seeds 1,2,3 \
+  --device cuda \
+  --hidden-size 256 \
+  --numseqs 8 \
+  --prefix-len 128 \
+  --causal-len 128
+```
+
+| Variant | H-level | Mean Eval Loss | Params | Peak VRAM | Warmup | Train ms/step | Train tok/s | Read |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `pom-sla` | SLA | 7.0822 | 136,196 | 1,943.4 MB | 0.14 s | 109.08 | 18,885.3 | fast control, worse loss |
+| `pom-gdn` | local GDN | 6.9962 | 141,320 | 2,077.2 MB | 2.58 s | 2,704.62 | 758.9 | better loss, unusably slow |
+| `pom-fla-gdn` | FLA GDN | 6.8271 | 844,872 | 1,829.2 MB | 57.34 s | 100.60 | 20,358.3 | best loss and fastest measured tok/s |
+
+Read:
+
+- Larger context strengthens the FLA GDN result.
+- `pom-fla-gdn` beats SLA by `0.2551` mean eval loss: `6.8271` vs `7.0822`.
+- `pom-fla-gdn` is slightly faster than SLA on measured token throughput: `20,358 tok/s` vs `18,885 tok/s`.
+- `pom-fla-gdn` uses less peak VRAM than SLA in this run: `1,829.2 MB` vs `1,943.4 MB`.
+- `pom-fla-gdn` has far more parameters because the FLA H-level owns dense projection weights: `844,872` vs `136,196`.
+- Local GDN remains a correctness/reference path, not a practical speed path.
+- Current read: for bigger context, `pom-fla-gdn` is the best H-level candidate so far.
