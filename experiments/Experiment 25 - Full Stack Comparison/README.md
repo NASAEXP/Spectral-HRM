@@ -107,27 +107,25 @@ Summary:
 
 | Variant | Final eval | Params | Peak VRAM | ms/step | Tokens/s | Read |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| `dense-attention` | 2.4711 | 34,996,224 | 2,052.5 MB | 90.58 | 22,612.1 | best loss, original-ish control |
-| `fourier-pom-sla-tied-fourier` | 7.0822 | 136,196 | 1,943.4 MB | 100.34 | 20,416.7 | very small, but loss is too high |
-| `fourier-pom-fla-gdn-tied-fourier` | 6.8271 | 844,872 | 1,829.2 MB | 88.67 | 23,107.3 | fast and compact, but still too compressed |
-| `fourier-pom-fla-gdn-dense-tied` | 3.4149 | 17,523,784 | 1,827.5 MB | 86.60 | 23,658.9 | best spectral tradeoff |
-
-Note: this run happened before `dense-tied-attention` was added. Re-run the main command to get the fifth control row.
+| `dense-attention` | 2.4711 | 34,996,224 | 2,052.5 MB | 92.46 | 22,172.0 | best loss, but has untied dense vocab/head |
+| `dense-tied-attention` | 5.7842 | 18,219,008 | 1,860.5 MB | 87.78 | 23,345.2 | tying the dense vocab/head causes a large loss drop |
+| `fourier-pom-sla-tied-fourier` | 7.0822 | 136,196 | 1,943.4 MB | 102.37 | 20,021.4 | very small, but loss is too high |
+| `fourier-pom-fla-gdn-tied-fourier` | 6.8271 | 844,872 | 1,829.2 MB | 91.90 | 22,324.4 | fast and compact, but still too compressed |
+| `fourier-pom-fla-gdn-dense-tied` | 3.4149 | 17,523,784 | 1,827.5 MB | 88.64 | 23,125.0 | best spectral tradeoff |
 
 Plain read:
 
-- Dense attention still wins loss by a lot at this tiny-data, short-run scale.
-- Fully Fourier-tied vocab is too aggressive here. It cuts params hard, but the loss gap is large.
-- Dense-tied vocab plus PoM/FLA GDN is the useful middle path: about half the dense params, lower VRAM, slightly faster measured steps, and much closer loss.
-- FLA GDN is still worth keeping as an H-level candidate. The problem is not the optimized GDN mixer; the problem is how much information the Fourier vocab/head is allowed to carry.
-- This does not prove the `~$100` training target yet. It says the next cost-reduction work should focus on vocab/head compression that does not damage loss as much.
+- The original-ish `dense-attention` win depends heavily on the untied dense vocab/head. When we tie the dense vocab/head, eval drops from `2.4711` to `5.7842`.
+- Under the tied dense vocab/head condition, our spectral body wins: `fourier-pom-fla-gdn-dense-tied` reaches `3.4149` with slightly fewer params, lower VRAM, and similar or better speed.
+- Fully Fourier-tied vocab is still too aggressive here. It cuts params hard, but the loss gap is large.
+- FLA GDN remains worth keeping as the H-level candidate. The useful stack right now is `PoM L-level + FLA GDN H-level + dense tied vocab/head`.
+- This still does not prove the `~$100` training target. It does show the cost path is not dead: the spectral body can beat dense tied attention, but the vocab/head compression needs a gentler bridge than pure Fourier.
 
 Next gate:
 
-- Re-run this experiment with `dense-tied-attention` included.
-- If `dense-tied-attention` stays close to `dense-attention`, the old dense win mostly came from normal attention/body behavior.
-- If `dense-tied-attention` drops near `fourier-pom-fla-gdn-dense-tied`, the old dense win was partly an untied vocab/head advantage.
-- After that, add a vocab bridge sweep between `tied_fourier` and `dense_tied`: larger modes, hybrid dense residual, or trainable low-rank residual.
+- Add a vocab bridge sweep between `tied_fourier` and `dense_tied`: larger modes, hybrid dense residual, or trainable low-rank residual.
+- Keep `dense-attention`, `dense-tied-attention`, and `fourier-pom-fla-gdn-dense-tied` as the three anchors.
+- Do not optimize the local GDN path further right now; FLA GDN is the path that matters on Colab/Linux.
 
 Tiny local CPU smoke:
 
@@ -139,14 +137,15 @@ Tiny local CPU smoke:
 
 This local smoke is only a wiring check. The real comparison still needs Colab with CUDA, especially for the FLA GDN variants.
 
-The expected decision point is simple:
+The expected decision point is simple now:
 
-- If `dense-attention` is much better per token, we have more architecture work before cost claims.
-- If the spectral variants are close while using fewer trained vocab/body parameters, the cost path is still alive.
-- If `fourier-pom-fla-gdn-tied-fourier` beats or matches `fourier-pom-fla-gdn-dense-tied`, the Fourier vocab remains worth keeping.
+- `dense-attention` is the full-capacity quality anchor.
+- `dense-tied-attention` shows how expensive vocab/head tying is for a normal dense body.
+- `fourier-pom-fla-gdn-dense-tied` shows the spectral body can recover much of that tied-vocab loss.
+- The next win needs to come from the vocab/head bridge, not another H-level mixer search.
 
 ## Open questions
 
-- Does the dense attention control win on loss once the context and hidden size are large enough?
-- Is FLA GDN still worth its extra parameters when compared against the full spectral baseline?
-- Does tied Fourier vocab remain competitive against dense tied vocab at larger scale?
+- Can a hybrid Fourier vocab/head close the gap to dense tied without going back to 17M vocab params?
+- Does `fourier-pom-fla-gdn-dense-tied` stay strong on a longer run, or is this mostly fast tiny-data fitting?
+- At what point does the untied dense vocab/head advantage matter less than model body efficiency?
