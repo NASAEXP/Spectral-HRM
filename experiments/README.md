@@ -48,3 +48,8 @@ Each experiment note should include:
 - Experiment 26 - Hybrid Fourier Vocab Bridge
 - Experiment 27 - TRM Island PolyAttn
 - Experiment 28 - Hybrid Vocab Scale Sweep
+- Experiment 29 - Vocab Head Pareto Sweep
+- Experiment 30 - Non-Fourier Vocab Heads
+- Experiment 31 - Symmetry Vocab Optimizer
+- Experiment 32 - Laptop HRM Ladder
+- Vast $10 pilot — `scripts/vast_pilot/README.md` + `config/cfg_pretrain_vast.yaml`

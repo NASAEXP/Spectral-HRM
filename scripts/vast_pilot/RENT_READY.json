@@ -1,0 +1,17 @@
+{
+  "vast_instance_id": 37353870,
+  "vast_offer_id": 37215903,
+  "vast_ssh": "ssh -p 33870 -i %USERPROFILE%\\.ssh\\id_ed25519 root@ssh5.vast.ai",
+  "vast_dph_usd": 0.68,
+  "prepared_at": "2026-05-22",
+  "dataset_dir": "C:\\Users\\Dos\\Documents\\GRAM\\data_io\\data_vast_pilot_slice",
+  "tarball": "C:\\Users\\Dos\\Documents\\GRAM\\data_io\\vast_pilot_data.tar.gz",
+  "tarball_mb": 245.7,
+  "total_tokens": 99999986,
+  "unique_corpus_tokens": 29384463,
+  "corpus_passes": 3,
+  "train_steps_batch_8192": 12207,
+  "upload_to": "/workspace/data_upload.tar",
+  "unpack_to": "/workspace/data/sampled",
+  "git_clone": "https://github.com/NASAEXP/Spectral-HRM.git"
+}

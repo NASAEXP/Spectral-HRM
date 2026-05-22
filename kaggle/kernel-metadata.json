@@ -1,0 +1,13 @@
+{
+  "id": "your-kaggle-username/spectral-hrm-exp29",
+  "title": "Spectral-HRM Experiment 29 Follow-up",
+  "code_file": "experiment_29_followup.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_internet": true,
+  "dataset_sources": [],
+  "kernel_sources": [],
+  "competition_sources": []
+}

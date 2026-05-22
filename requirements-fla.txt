@@ -1,3 +1,5 @@
 # Optional FLA speed path for DeltaNet/Gated DeltaNet experiments.
-# The optimized kernels still require a Triton-capable Linux/CUDA environment.
+# Triton is NOT pulled in automatically.
+# Windows: pip install "triton-windows<3.8"  (match PyTorch; see github.com/triton-lang/triton-windows)
+# Linux/Colab: python colab/install_fla_colab.py  OR FLA index wheels in COLAB.md
 flash-linear-attention==0.5.0

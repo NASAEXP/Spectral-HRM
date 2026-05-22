@@ -17,6 +17,7 @@ Added `full_stack_comparison.py` with these variants:
 | `fourier-pom-sla-tied-fourier` | PoM | SLA | tied Fourier vocab | current small/fast spectral baseline |
 | `fourier-pom-fla-gdn-tied-fourier` | PoM | FLA GDN | tied Fourier vocab | best compressed-vocab GDN candidate |
 | `fourier-pom-fla-gdn-dense-tied` | PoM | FLA GDN | dense tied vocab | checks if the Fourier vocab is helping or hurting |
+| `fourier-pom-fla-gdn-projected-dense-tied` | PoM | FLA GDN | projected dense tied (`W_out = W_in @ T`) | current Spectral-HRM quality baseline |
 
 For FLA GDN, the H-level disables `FourierLinear` projections because the optimized FLA wrapper owns dense internal projections.
 
@@ -143,6 +144,40 @@ The expected decision point is simple now:
 - `dense-tied-attention` shows how expensive vocab/head tying is for a normal dense body.
 - `fourier-pom-fla-gdn-dense-tied` shows the spectral body can recover much of that tied-vocab loss.
 - The next win needs to come from the vocab/head bridge, not another H-level mixer search.
+
+## Projected baseline vs original HRM (local CUDA, 2026-05-22)
+
+Same script/harness as above (`steps=40`, `seeds=1,2,3`, BPE 65k, `128×128`).
+
+```powershell
+rtk python "experiments/Experiment 25 - Full Stack Comparison/full_stack_comparison.py" `
+  --device cuda --steps 40 --seeds 1,2,3 `
+  --variants dense-attention,dense-tied-attention,fourier-pom-fla-gdn-dense-tied,fourier-pom-fla-gdn-projected-dense-tied
+```
+
+| Variant | Mean eval ↓ | Params | Read |
+| --- | ---: | ---: | --- |
+| **`fourier-pom-fla-gdn-projected-dense-tied`** | **3.17** | 17,654,856 | **best** — PoM + FLA-GDN + projected tie |
+| `dense-attention` (original-ish) | 3.55 | 34,996,224 | untied embed + LM head (~2× vocab capacity) |
+| `fourier-pom-fla-gdn-dense-tied` | 4.04 | 17,523,784 | spectral body + strict tie |
+| `dense-tied-attention` | 6.01 | 18,219,008 | original body + strict tie |
+
+On this run, **projected-dense-tied beats the original untied dense-attention path** on eval while using **~half the parameters**. The earlier Colab Exp 25 row (`dense-attention` **2.47**) used the same script shape but a different token slice / GPU; treat **3.55 vs 3.17** as the paired comparison on current local README-BPE data.
+
+### Real HRM laptop slice (~5M tokens, local CUDA, 2026-05-22)
+
+`--data-source hrm_slice` — `data_io/data_laptop_hrm_slice` (gsm8k + math + no_robots + 25k webinstruct).
+
+| Variant | Mean eval ↓ | Params |
+| --- | ---: | ---: |
+| **`fourier-pom-fla-gdn-projected-dense-tied`** | **5.68** | 17,654,856 |
+| `dense-attention` | 5.84 | 34,996,224 |
+| `fourier-pom-fla-gdn-dense-tied` | 5.89 | 17,523,784 |
+| `dense-tied-attention` | 6.07 | 18,219,008 |
+
+Real inst/resp text is **harder** than README BPE (~5.7 vs ~3.2), but the **ranking holds**: projected + spectral body still wins vs original untied at ~half vocab params.
+
+**Follow-up:** [Experiment 32 - Laptop HRM Ladder](../Experiment%2032%20-%20Laptop%20HRM%20Ladder/README.md) — **500 steps**, h ∈ {256,384,512}: projected **4.54–4.61** vs untied **4.92–4.94** on the same slice (~44 min local CUDA).
 
 ## Open questions
 

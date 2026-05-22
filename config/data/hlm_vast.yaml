@@ -1,0 +1,3 @@
+# Point at a V1Dataset directory on the Vast instance (upload before training).
+path: /workspace/data/sampled
+target_only: true

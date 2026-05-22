@@ -1,0 +1,5 @@
+# Copy to env_vast_smoke on the instance (optional)
+# export WANDB_MODE=offline
+# export WANDB_API_KEY=
+export PYTHONUNBUFFERED=1
+export WORK=/workspace

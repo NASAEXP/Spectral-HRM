@@ -80,9 +80,71 @@ rtk git diff --check
 
 ## Current read
 
-No Colab results yet.
+### Colab main sweep (2026-05-21)
 
-Tiny local CPU smoke:
+Command:
+
+```python
+%cd /content/Spectral-HRM
+!git pull
+!python "experiments/Experiment 28 - Hybrid Vocab Scale Sweep/hybrid_vocab_scale_sweep.py" \
+  --steps 40 \
+  --warmup-steps 1 \
+  --seeds 1,2,3 \
+  --device cuda
+```
+
+Run shape:
+
+- `device=cuda`
+- `tokenizer=/content/data_io/trained_tokenizers/bpe/tokenizer.json`
+- `vocab_size=65,536`
+- `tokens=126,408` (`train=101,126`, `eval=25,282`)
+- `context=128x128`, `hidden_size=256`, `numseqs=8`
+- `vocab_modes=512`, `hidden_modes=64`, `fourier_mode=64`
+- `pom_order=4`, `ordering=token_frequency`, `warmup_steps=1`
+- `seeds=1,2,3`
+
+Summary (mean over 3 seeds):
+
+| Variant | Final eval | Params | Peak VRAM | ms/step | Tokens/s | Read |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `spectral-dense-tied` | **4.0146** | 17,523,784 | 1,827.5 MB | 90.80 | 22,577.1 | **best quality**; spectral body + dense tied head |
+| `spectral-hybrid-r128-s050` | 6.0116 | 9,266,248 | 1,925.6 MB | 100.15 | 20,483.5 | **best hybrid**; matches Exp 26 anchor scale |
+| `dense-tied-attention` | 6.2045 | 18,219,008 | 1,860.5 MB | 87.67 | 23,403.6 | dense body control |
+| `spectral-hybrid-r128-s100` | 6.2371 | 9,266,248 | 1,925.6 MB | 100.77 | 20,352.4 | stronger residual did not help |
+| `spectral-hybrid-r128-s025` | 6.3599 | 9,266,248 | 1,925.6 MB | 98.57 | 20,802.9 | weaker residual is worse |
+| `spectral-hybrid-r128-s200` | 6.6835 | 9,266,248 | 1,925.6 MB | 101.74 | 20,171.2 | unstable starts (~31 eval); scale too hot |
+| `spectral-tied-fourier` | 7.0494 | 844,872 | 1,829.2 MB | 90.19 | 22,731.4 | smallest params; worst eval |
+
+Per-seed final eval (eval loss after training):
+
+| Variant | seed=1 | seed=2 | seed=3 |
+| --- | ---: | ---: | ---: |
+| `spectral-dense-tied` | 3.9400 | 3.9910 | 4.1128 |
+| `spectral-hybrid-r128-s050` | 5.9799 | 6.0124 | 6.0425 |
+| `spectral-hybrid-r128-s100` | 5.8366 | 6.3431 | 6.5317 |
+| `spectral-hybrid-r128-s025` | 6.3343 | 6.3041 | 6.4412 |
+| `spectral-hybrid-r128-s200` | 6.6497 | 6.6688 | 6.7321 |
+| `dense-tied-attention` | 5.8742 | 6.2043 | 6.5349 |
+| `spectral-tied-fourier` | 7.0451 | 7.0139 | 7.0891 |
+
+Plain read:
+
+- **`residual_scale` did not close the gap** to `spectral-dense-tied` (best hybrid ~6.01 vs target ~4.01).
+- **`0.50` remains the best hybrid setting** in this sweep; `0.25` is worse, `1.00` is not better on mean eval, and **`2.00` is unstable** (very high initial eval, weak final gain).
+- Hybrids save **~49% params** vs dense tied heads (~9.3M vs ~17.5–18.2M) but **do not beat** the spectral-dense-tied quality target at any tested scale.
+- **`spectral-tied-fourier` alone** is far too small param-wise and remains the worst eval floor.
+- VRAM spread is narrow (~1.83–1.93 GB peak); scale changes quality more than memory here.
+- Throughput: dense-tied-attention is fastest; hybrids cost ~12–16% more ms/step with slightly lower tokens/s.
+
+Decision (vs pre-run expectations):
+
+- Do **not** keep tuning rank-128 scale alone — the simple tied low-rank residual shape still caps well above `spectral-dense-tied`.
+- **Keep `spectral-dense-tied` as the quality reference** for the spectral body stack.
+- Next bridge work should move **beyond scalar scale** (untied / two-sided / different rank), or accept hybrid as a **param/VRAM trade**, not a quality win at this shape.
+
+Tiny local CPU smoke (wiring only):
 
 | Variant | Final eval | Params | ms/step | Tokens/s | Note |
 | --- | ---: | ---: | ---: | ---: | --- |
@@ -90,14 +152,8 @@ Tiny local CPU smoke:
 
 The hybrid scale variants need Colab/Linux because the spectral H-level uses FLA GDN.
 
-Expected decision:
-
-- If scale 1.0 or 2.0 closes the gap to `spectral-dense-tied`, keep the rank-128 bridge and tune scale.
-- If all scales remain near Experiment 26, the simple tied low-rank residual shape is the limiter.
-- If larger scales destabilize loss, the residual is overpowering the Fourier seed.
-
 ## Open questions
 
-- Is `residual_scale=0.5` underpowered?
-- Does scale change quality without changing params or much VRAM?
-- Should the next bridge be untied/two-sided instead of simply stronger?
+- Can an **untied** or **two-sided** rank-128 bridge beat ~6.0 eval without jumping back to ~17.5M params?
+- Is rank 128 still the right bottleneck, or should rank track `hidden_size` / vocab block structure?
+- Does a longer run (more steps / seeds) narrow the ~2.0 eval gap between `spectral-hybrid-r128-s050` and `spectral-dense-tied`?

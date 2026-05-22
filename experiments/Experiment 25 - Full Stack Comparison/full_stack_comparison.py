@@ -13,7 +13,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from models.baselines.hrm_nocarry_bp_warmup import HierarchicalReasoningModel
 from models.layers import Attention, FLAGatedDeltaNetAttention, FourierLinear, PoMAttention, SLAAttention
-from models.lm_head import DenseTiedVocab, LMHead, TiedFourierVocab
+from models.lm_head import DenseTiedVocab, LMHead, ProjectedDenseTiedVocab, TiedFourierVocab
 
 
 def _load_vocab_probe():
@@ -65,6 +65,12 @@ VARIANT_SPECS = {
         "L_mixer": "pom",
         "H_mixer": "fla_gdn",
     },
+    "fourier-pom-fla-gdn-projected-dense-tied": {
+        "base_variant": "fourier-all-dense-tied-vocab",
+        "L_mixer": "pom",
+        "H_mixer": "fla_gdn",
+        "vocab_head": {"type": "projected_dense_tied", "bias": True},
+    },
 }
 
 
@@ -103,6 +109,9 @@ def make_config(*,
         h_override["fourier_linear"] = dict(config.get("fourier_linear", {"enabled": False})) | {"enabled": False}
     config["H_override"] = h_override
     config["pom_order"] = pom_order
+    vocab_head = spec.get("vocab_head")
+    if vocab_head is not None:
+        config["vocab_head"] = dict(vocab_head)
     return config
 
 
@@ -114,6 +123,7 @@ def count_modules(model: torch.nn.Module) -> dict[str, int]:
         "sla_modules": sum(1 for module in model.modules() if isinstance(module, SLAAttention)),
         "fla_gdn_modules": sum(1 for module in model.modules() if isinstance(module, FLAGatedDeltaNetAttention)),
         "dense_tied_vocab_modules": sum(1 for module in model.modules() if isinstance(module, DenseTiedVocab)),
+        "projected_dense_vocab_modules": sum(1 for module in model.modules() if isinstance(module, ProjectedDenseTiedVocab)),
         "tied_fourier_vocab_modules": sum(1 for module in model.modules() if isinstance(module, TiedFourierVocab)),
     }
 
@@ -166,6 +176,36 @@ def evaluate(model: torch.nn.Module,
     return sum(losses) / len(losses)
 
 
+def build_probe_model(*,
+                      variant: str,
+                      device: torch.device,
+                      vocab_size: int,
+                      prefix_len: int,
+                      causal_len: int,
+                      hidden_size: int,
+                      vocab_modes: int,
+                      hidden_modes: int,
+                      fourier_mode: int,
+                      pom_order: int,
+                      token_permutation: torch.Tensor) -> tuple[LMHead, dict]:
+    total_len = prefix_len + causal_len
+    config = make_config(
+        variant=variant,
+        vocab_size=vocab_size,
+        seq_len=total_len,
+        hidden_size=hidden_size,
+        vocab_modes=vocab_modes,
+        hidden_modes=hidden_modes,
+        fourier_mode=fourier_mode,
+        pom_order=pom_order,
+    )
+    model = LMHead(HierarchicalReasoningModel(config), config).to(device)
+    for module in model.modules():
+        if isinstance(module, TiedFourierVocab):
+            module.set_token_permutation(token_permutation)
+    return model, config
+
+
 def train_once(*,
                variant: str,
                seed: int,
@@ -184,23 +224,24 @@ def train_once(*,
                pom_order: int,
                warmup_steps: int,
                token_permutation: torch.Tensor,
-               vocab_size: int) -> dict[str, float | int | str]:
+               vocab_size: int,
+               save_ckpt_dir: Path | None = None,
+               tokenizer_path: Path | None = None) -> dict[str, float | int | str]:
     torch.manual_seed(seed)
     total_len = prefix_len + causal_len
-    config = make_config(
+    model, config = build_probe_model(
         variant=variant,
+        device=device,
         vocab_size=vocab_size,
-        seq_len=total_len,
+        prefix_len=prefix_len,
+        causal_len=causal_len,
         hidden_size=hidden_size,
         vocab_modes=vocab_modes,
         hidden_modes=hidden_modes,
         fourier_mode=fourier_mode,
         pom_order=pom_order,
+        token_permutation=token_permutation,
     )
-    model = LMHead(HierarchicalReasoningModel(config), config).to(device)
-    for module in model.modules():
-        if isinstance(module, TiedFourierVocab):
-            module.set_token_permutation(token_permutation)
     optimizer = torch.optim.AdamW(model.parameters(), lr=2e-3, weight_decay=0.01)
 
     if device.type == "cuda":
@@ -257,6 +298,45 @@ def train_once(*,
         prefix_len=prefix_len,
         causal_len=causal_len,
     )
+
+    ckpt_path: str | None = None
+    if save_ckpt_dir is not None:
+        def _load_script(name: str):
+            path = REPO_ROOT / "scripts" / f"{name}.py"
+            spec = importlib.util.spec_from_file_location(name, path)
+            module = importlib.util.module_from_spec(spec)
+            assert spec.loader is not None
+            spec.loader.exec_module(module)
+            return module
+
+        probe_ckpt = _load_script("probe_checkpoint")
+        probe_tok = _load_script("probe_tokenizer_info")
+
+        slug = probe_ckpt.probe_ckpt_slug(variant=variant, hidden_size=hidden_size, seed=seed)
+        out_dir = Path(save_ckpt_dir) / slug
+        tok_path = tokenizer_path or TOKENIZER_ORDERING.DEFAULT_TOKENIZER_PATH
+        probe_ckpt.save_probe_checkpoint(
+            out_dir,
+            model,
+            model_config=config,
+            probe_meta={
+                "variant": variant,
+                "seed": seed,
+                "hidden_size": hidden_size,
+                "vocab_size": vocab_size,
+                "prefix_len": prefix_len,
+                "causal_len": causal_len,
+                "steps": steps,
+                "warmup_steps": warmup_steps,
+                "first_eval": first_eval,
+                "final_eval": final_eval,
+                "train_loss": last_train_loss,
+            },
+            tokenizer_info=probe_tok.default_probe_tokenizer_info(tok_path, vocab_size=vocab_size),
+            token_permutation=token_permutation,
+        )
+        ckpt_path = str(out_dir)
+
     return {
         "variant": variant,
         "seed": seed,
@@ -271,6 +351,7 @@ def train_once(*,
         "elapsed_s": time.perf_counter() - start,
         **{key: float(value) for key, value in modules.items()},
         **speed_metrics,
+        "ckpt_path": ckpt_path or "",
     }
 
 
@@ -332,6 +413,17 @@ def main() -> None:
     parser.add_argument("--seeds", default="1,2,3")
     parser.add_argument("--variants", default=DEFAULT_VARIANTS)
     parser.add_argument("--tokenizer-path", type=Path, default=TOKENIZER_ORDERING.DEFAULT_TOKENIZER_PATH)
+    parser.add_argument(
+        "--slice-dir",
+        type=Path,
+        default=TOKENIZER_ORDERING.GRAM_ROOT / "data_io" / "data_laptop_hrm_slice",
+    )
+    parser.add_argument(
+        "--data-source",
+        choices=["auto", "hrm_slice", "readme"],
+        default="auto",
+        help="auto: use HRM laptop slice if present, else README BPE fallback.",
+    )
     parser.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
     parser.add_argument("--hidden-size", type=int, default=256)
     parser.add_argument("--numseqs", type=int, default=8)
@@ -356,11 +448,22 @@ def main() -> None:
     vocab_size = len(id_to_token)
     total_len = args.prefix_len + args.causal_len
     tokens_needed = total_len * args.numseqs * (args.steps + args.warmup_steps + args.eval_batches + 8)
-    tokens = TOKENIZER_ORDERING.load_tokenizer_tokens(args.tokenizer_path, min_tokens=tokens_needed)
+    prefer_slice = args.data_source in {"auto", "hrm_slice"}
+    if args.data_source == "hrm_slice" and not (args.slice_dir / "metadata.json").is_file():
+        raise FileNotFoundError(f"--data-source hrm_slice requires {args.slice_dir / 'metadata.json'}")
+    tokens = TOKENIZER_ORDERING.load_tokenizer_tokens(
+        args.tokenizer_path,
+        min_tokens=tokens_needed,
+        slice_dir=args.slice_dir,
+        prefer_slice=prefer_slice and args.data_source != "readme",
+    )
     train_tokens, eval_tokens = HOLDOUT.split_train_eval_tokens(tokens, eval_fraction=args.eval_fraction)
     token_permutation = TOKENIZER_ORDERING.make_token_permutation("token_frequency", tokens=train_tokens, id_to_token=id_to_token)
 
+    slice_active = (args.slice_dir / "metadata.json").is_file() and args.data_source != "readme"
     print(f"device={device}")
+    print(f"data_source={'hrm_slice' if slice_active else 'readme_bpe'}")
+    print(f"slice_dir={args.slice_dir if slice_active else 'n/a'}")
     print(f"tokenizer={args.tokenizer_path}")
     print(f"vocab_size={vocab_size:,}")
     print(f"tokens={tokens.numel():,}, train={train_tokens.numel():,}, eval={eval_tokens.numel():,}, steps={args.steps}, seeds={seeds}")

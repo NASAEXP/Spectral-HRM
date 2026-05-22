@@ -1,0 +1,32 @@
+# Locked laptop winner: PoM (L) + FLA-GDN (H) + projected dense tied vocab.
+name: baselines.hrm_nocarry_bp_warmup@HierarchicalReasoningModel
+head: lm_head@LMHead
+
+half_layers: true
+
+H_cycles: 1
+L_cycles: 1
+
+bp_warmup_ratio: 0.05
+bp_min_steps: 2
+bp_max_steps: 2
+
+token_mixer: pom
+pom_order: 4
+
+H_override:
+  token_mixer: fla_gdn
+  fourier_linear:
+    enabled: false
+
+fourier_linear:
+  enabled: true
+  target: all
+  in_modes: 64
+  out_modes: 64
+
+vocab_head:
+  type: projected_dense_tied
+  bias: true
+  vocab_modes: 512
+  hidden_modes: 256

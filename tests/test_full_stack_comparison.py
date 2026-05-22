@@ -105,3 +105,23 @@ def test_fla_dense_tied_config_uses_dense_tied_vocab():
     assert config["vocab_head"]["type"] == "dense_tied"
     assert config["H_override"]["token_mixer"] == "fla_gdn"
     assert config["H_override"]["fourier_linear"]["enabled"] is False
+
+
+def test_fla_projected_dense_tied_config():
+    probe = _load_probe_module()
+
+    config = probe.make_config(
+        variant="fourier-pom-fla-gdn-projected-dense-tied",
+        vocab_size=65536,
+        seq_len=256,
+        hidden_size=256,
+        vocab_modes=512,
+        hidden_modes=64,
+        fourier_mode=64,
+        pom_order=4,
+    )
+
+    assert config["token_mixer"] == "pom"
+    assert config["vocab_head"]["type"] == "projected_dense_tied"
+    assert config["vocab_head"]["bias"] is True
+    assert config["H_override"]["token_mixer"] == "fla_gdn"

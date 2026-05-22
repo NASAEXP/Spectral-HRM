@@ -13,13 +13,13 @@ import torch.distributed.checkpoint as dcp
 from torch.distributed.checkpoint.state_dict import get_optimizer_state_dict
 from transformers import AutoTokenizer, PreTrainedTokenizer
 
-from pretrain import Carry, PretrainConfig, V1DatasetMeta, load_model_class, AdamATan2
+from models.layers import Carry
 
 
 @dataclass
 class InferenceCheckpoint:
     model: nn.Module
-    carry: Carry
+    carry: Carry | None
     tokenizer: PreTrainedTokenizer
     tokenizer_info: dict[str, Any]
 
@@ -35,6 +35,8 @@ class InferenceCheckpoint:
 
 
 def inference_load_checkpoint(ckpt_path: str, ckpt_epoch: Optional[int], ckpt_use_ema: bool):
+    from pretrain import AdamATan2, PretrainConfig, V1DatasetMeta, load_model_class
+
     # Load Checkpoint
     # Load config
     with open(os.path.join(ckpt_path, "all_config.yaml"), "r") as f:

@@ -1,0 +1,14 @@
+# Vast $10 pilot backbone (~8 layers → 4 L + 4 H with half_layers).
+n_layers: 8
+
+hidden_size: 768
+num_heads: 6
+expansion: 4
+
+norm_type: pre
+norm_eps: 1e-6
+
+rope_theta: 10000.0
+pos_emb_type: rope
+
+init_type: lecun_normal

@@ -6,6 +6,16 @@ Evaluation takes 1 GPU (assmuing 80 GiB VRAM). Lower batch_size when OOM issues 
 python -m evaluation.main ckpt_path="<CHECKPOINT_PATH>"
 ```
 
+### Laptop probe checkpoints (Spectral-HRM experiments)
+
+Experiment probes (Exp 25 / 32) save a lightweight layout under `runs/.../ckpts/<variant>_h<size>_s<seed>/`. Use the probe harness (CUDA, generation benchmarks only):
+
+```bash
+python scripts/probe_benchmark.py --ckpt-dir runs/exp32/ckpts/fourier-pom-fla-gdn-projected-dense-tied_h512_s1 --benchmarks GSM8k --limit 50
+```
+
+This is **not** comparable to the table below (different scale and training). For official HRM-Text numbers, use `ckpt_path="sapientinc/HRM-Text-1B"` (or your FSDP pretrain dir) with `evaluation.main`.
+
 ## Baseline evaluation
 
 ```bash

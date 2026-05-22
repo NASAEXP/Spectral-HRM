@@ -59,13 +59,24 @@ def _local_text() -> str:
     return "\n\n".join(parts)
 
 
-def load_tokenizer_tokens(tokenizer_path: Path, *, min_tokens: int) -> torch.Tensor:
-    tokenizer = Tokenizer.from_file(str(tokenizer_path))
-    encoded = tokenizer.encode(_local_text(), add_special_tokens=False)
-    tokens = torch.tensor(encoded.ids, dtype=torch.long)
-    if tokens.numel() < min_tokens + 1:
-        repeats = (min_tokens + 1 + tokens.numel() - 1) // tokens.numel()
-        tokens = tokens.repeat(repeats)
+def load_tokenizer_tokens(
+    tokenizer_path: Path,
+    *,
+    min_tokens: int,
+    slice_dir: Path | None = None,
+    prefer_slice: bool = True,
+) -> torch.Tensor:
+    scripts_path = REPO_ROOT / "scripts" / "load_probe_tokens.py"
+    spec = importlib.util.spec_from_file_location("load_probe_tokens", scripts_path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    tokens, _source = module.load_probe_tokens(
+        min_tokens=min_tokens,
+        tokenizer_path=tokenizer_path,
+        slice_dir=slice_dir,
+        prefer_slice=prefer_slice,
+    )
     return tokens
 
 

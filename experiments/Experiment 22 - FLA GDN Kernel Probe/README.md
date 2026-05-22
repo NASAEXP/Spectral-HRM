@@ -26,6 +26,28 @@ Experiment 22 = can we use the optimized FLA kernel path here?
 
 ## How To Run
 
+### Windows (native, no WSL)
+
+Use [triton-windows](https://github.com/triton-lang/triton-windows) — not `colab/install_fla_colab.py` (Linux wheels).
+
+```powershell
+rtk python -m pip uninstall -y triton pytorch-triton pytorch-triton-rocm
+rtk python -m pip install nvidia-cuda-nvcc-cu12 nvidia-cuda-runtime-cu12
+rtk python -m pip install -U "triton-windows<3.8"
+rtk python -m pip install -r requirements-fla.txt
+rtk python "experiments\Experiment 22 - FLA GDN Kernel Probe\fla_gdn_probe.py" --require-ready
+```
+
+Match `triton-windows<3.x` to your PyTorch minor version (see triton-windows README).
+
+### Linux / Colab
+
+```powershell
+rtk python colab/install_fla_colab.py
+```
+
+Or:
+
 ```powershell
 rtk python -m pip install -r requirements-fla.txt
 rtk python "experiments\Experiment 22 - FLA GDN Kernel Probe\fla_gdn_probe.py"
@@ -39,21 +61,19 @@ rtk python "experiments\Experiment 22 - FLA GDN Kernel Probe\fla_gdn_probe.py" -
 
 ## Current Read
 
-Local Windows result:
+Local Windows result (2026-05-22, `triton-windows` 3.7.0, `torch` 2.12+cu126):
 
 ```text
-status=missing_triton
+status=ready
 fla_available=True
-triton_available=False
-gdn_import_ok=False
-gdn_import_error=ModuleNotFoundError: No module named 'triton'
+triton_available=True
+gdn_import_ok=True
 ```
 
 Read:
 
-- FLA itself installs here.
-- The optimized Gated DeltaNet layer does not import locally because Triton is unavailable for this Python/Windows environment.
-- Do not wire `fla.layers.GatedDeltaNet` into HRM on this machine yet. The proper speed pass needs Linux/Colab where Triton can install and the FLA kernels can actually load.
+- FLA GatedDeltaNet imports on Windows when `triton-windows` is installed.
+- You can run FLA-GDN port sweeps locally (`fla_gdn_port_sweep.py`, `run_exp29_followup.sh fla`) without Colab/Linux for Triton alone.
 
 Free Colab result:
 
