@@ -80,7 +80,49 @@ rtk git diff --check
 
 ## Current read
 
-No Experiment 25 Colab result yet.
+### Colab T4 main comparison
+
+Command:
+
+```python
+!python "experiments/Experiment 25 - Full Stack Comparison/full_stack_comparison.py" \
+  --steps 40 \
+  --warmup-steps 1 \
+  --seeds 1,2,3 \
+  --device cuda
+```
+
+Run shape:
+
+- `tokens=115,170`
+- `train=92,136`
+- `eval=23,034`
+- `context=128x128`
+- `hidden_size=256`
+- `numseqs=8`
+- `vocab_size=65,536`
+
+Summary:
+
+| Variant | Final eval | Params | Peak VRAM | ms/step | Tokens/s | Read |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `dense-attention` | 2.4711 | 34,996,224 | 2,052.5 MB | 90.58 | 22,612.1 | best loss, original-ish control |
+| `fourier-pom-sla-tied-fourier` | 7.0822 | 136,196 | 1,943.4 MB | 100.34 | 20,416.7 | very small, but loss is too high |
+| `fourier-pom-fla-gdn-tied-fourier` | 6.8271 | 844,872 | 1,829.2 MB | 88.67 | 23,107.3 | fast and compact, but still too compressed |
+| `fourier-pom-fla-gdn-dense-tied` | 3.4149 | 17,523,784 | 1,827.5 MB | 86.60 | 23,658.9 | best spectral tradeoff |
+
+Plain read:
+
+- Dense attention still wins loss by a lot at this tiny-data, short-run scale.
+- Fully Fourier-tied vocab is too aggressive here. It cuts params hard, but the loss gap is large.
+- Dense-tied vocab plus PoM/FLA GDN is the useful middle path: about half the dense params, lower VRAM, slightly faster measured steps, and much closer loss.
+- FLA GDN is still worth keeping as an H-level candidate. The problem is not the optimized GDN mixer; the problem is how much information the Fourier vocab/head is allowed to carry.
+- This does not prove the `~$100` training target yet. It says the next cost-reduction work should focus on vocab/head compression that does not damage loss as much.
+
+Next gate:
+
+- Add a vocab bridge sweep between `tied_fourier` and `dense_tied`: larger modes, hybrid dense residual, or trainable low-rank residual.
+- Compare against a dense-tied attention control so we know how much of the dense win comes from attention vs the untied dense vocab/head.
 
 Tiny local CPU smoke:
 
