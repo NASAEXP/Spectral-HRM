@@ -49,4 +49,23 @@ If that passes, run the 40-step comparison:
 
 ## Current Read
 
-Pending Colab run.
+Free Colab T4 smoke:
+
+```python
+!python "experiments/Experiment 24 - FLA GDN Speed Pass/fla_gdn_speed_pass.py" --steps 5 --warmup-steps 1 --seeds 1 --device cuda
+```
+
+| Variant | H-level | Eval Loss | Params | Peak VRAM | Warmup | Train ms/step | Train tok/s | Read |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `pom-sla` | SLA | 7.5673 | 135,684 | 330.6 MB | 0.22 s | 20.49 | 9,369.3 | fastest control |
+| `pom-gdn` | local GDN | 8.0882 | 140,296 | 334.0 MB | 0.29 s | 201.11 | 954.7 | local recurrence bottleneck |
+| `pom-fla-gdn` | FLA GDN | 7.4979 | 301,608 | 439.6 MB | 268.74 s | 21.04 | 9,124.3 | compile-heavy, then fast |
+
+Read:
+
+- The earlier `53s/step` result was compile cost, not steady-state speed.
+- FLA GDN has a huge first-run warmup on free Colab/T4: `268.74s`.
+- After warmup, FLA GDN is basically SLA-speed: `21.04 ms/step` vs `20.49 ms/step`.
+- FLA GDN is roughly `9.6x` faster than local GDN on measured train steps.
+- FLA GDN uses more parameters and VRAM in this first wrapper: `301,608` params and `439.6 MB`.
+- Next gate: run the 40-step, 3-seed comparison without recloning if possible, so Triton cache stays warm.
