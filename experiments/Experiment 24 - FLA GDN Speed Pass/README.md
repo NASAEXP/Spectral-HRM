@@ -68,4 +68,24 @@ Read:
 - After warmup, FLA GDN is basically SLA-speed: `21.04 ms/step` vs `20.49 ms/step`.
 - FLA GDN is roughly `9.6x` faster than local GDN on measured train steps.
 - FLA GDN uses more parameters and VRAM in this first wrapper: `301,608` params and `439.6 MB`.
-- Next gate: run the 40-step, 3-seed comparison without recloning if possible, so Triton cache stays warm.
+
+Free Colab T4 40-step, 3-seed result:
+
+```python
+!python "experiments/Experiment 24 - FLA GDN Speed Pass/fla_gdn_speed_pass.py" --steps 40 --warmup-steps 1 --seeds 1,2,3 --device cuda
+```
+
+| Variant | H-level | Mean Eval Loss | Params | Peak VRAM | Warmup | Train ms/step | Train tok/s | Read |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `pom-sla` | SLA | 6.8143 | 135,684 | 330.6 MB | 0.08 s | 17.71 | 10,842.5 | fastest and smallest |
+| `pom-gdn` | local GDN | 6.7971 | 140,296 | 334.0 MB | 0.25 s | 246.84 | 783.8 | slight quality gain, too slow |
+| `pom-fla-gdn` | FLA GDN | 6.7780 | 301,608 | 366.1 MB | 91.01 s | 20.48 | 9,475.5 | best loss, near SLA speed |
+
+Read:
+
+- `pom-fla-gdn` is the best mean eval loss in this run: `6.7780`.
+- It is much faster than local GDN: `20.48 ms/step` vs `246.84 ms/step`, about `12x`.
+- It is close to SLA speed: `20.48 ms/step` vs `17.71 ms/step`.
+- Its first seed paid the big Triton compile cost, so mean warmup is still high at `91.01s`.
+- It uses more params than the local mixers because FLA GDN owns dense internal projections.
+- Current read: `pom-fla-gdn` is now worth keeping as the H-level speed/quality candidate, but we need a larger-context run before locking it.
