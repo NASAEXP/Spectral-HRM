@@ -121,6 +121,39 @@ def test_lm_head_can_use_dense_tied_vocab():
     assert model.vocab_head.weight.grad is not None
 
 
+def test_lm_head_can_use_hybrid_fourier_lowrank_vocab():
+    import models.lm_head as lm_head
+
+    model = LMHead(
+        IdentityModel(hidden_size=12),
+        {
+            "vocab_size": 23,
+            "vocab_head": {
+                "type": "hybrid_fourier_lowrank",
+                "vocab_modes": 6,
+                "hidden_modes": 5,
+                "residual_rank": 3,
+                "residual_scale": 0.5,
+                "bias": True,
+            },
+        },
+    )
+
+    _carry, logits = model(carry=None, batch={"inputs": torch.tensor([1, 5, 9])})
+    logits.sum().backward()
+
+    assert isinstance(model.vocab_head, lm_head.HybridFourierLowRankVocab)
+    assert model.embed_tokens is model.vocab_head
+    assert model.lm_head is model.vocab_head
+    assert logits.shape == (3, 23)
+    assert model.vocab_head.dense_weight().shape == (23, 12)
+    assert model.vocab_head.coefficients.grad is not None
+    assert model.vocab_head.token_residual.grad is not None
+    assert model.vocab_head.hidden_residual.grad is not None
+    assert model.vocab_head.bias.grad is not None
+    assert sum(param.numel() for param in model.vocab_head.parameters()) < 23 * 12 + 23
+
+
 def test_lm_head_can_use_untied_fourier_vocab():
     model = LMHead(
         IdentityModel(hidden_size=12),

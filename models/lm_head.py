@@ -14,9 +14,11 @@ from models.common import IGNORE_LABEL_ID, packing_sequence_sum, trunc_normal_in
 
 
 class VocabHeadConfig(BaseModel):
-    type: Literal["dense", "dense_tied", "tied_fourier", "untied_fourier", "learned_token_fourier"] = "dense"
+    type: Literal["dense", "dense_tied", "tied_fourier", "hybrid_fourier_lowrank", "untied_fourier", "learned_token_fourier"] = "dense"
     vocab_modes: int = 2048
     hidden_modes: int = 512
+    residual_rank: int = 64
+    residual_scale: float = 0.5
     basis_type: Literal["dct", "fft"] = "dct"
     bias: bool = False
     embedding_scale: Literal["init", "none", "sqrt_hidden", "learned"] = "init"
@@ -233,6 +235,104 @@ class TiedFourierVocab(nn.Module, EmbeddingScaleMixin):
         return self.embed(input_ids)
 
 
+class HybridFourierLowRankVocab(TiedFourierVocab):
+    def __init__(self,
+                 vocab_size: int,
+                 hidden_size: int,
+                 init_std: float,
+                 vocab_modes: int,
+                 hidden_modes: int,
+                 residual_rank: int,
+                 residual_scale: float = 0.5,
+                 basis_type: str = "dct",
+                 bias: bool = False,
+                 embedding_scale: str = "init",
+                 token_order: str = "identity",
+                 checkpoint_weight: bool = False,
+                 **kwargs):
+        if residual_rank <= 0:
+            raise ValueError("residual_rank must be positive.")
+        super().__init__(
+            vocab_size=vocab_size,
+            hidden_size=hidden_size,
+            init_std=init_std,
+            vocab_modes=vocab_modes,
+            hidden_modes=hidden_modes,
+            basis_type=basis_type,
+            bias=bias,
+            embedding_scale=embedding_scale,
+            token_order=token_order,
+            checkpoint_weight=checkpoint_weight,
+            **kwargs,
+        )
+        self.residual_rank = min(residual_rank, vocab_size, hidden_size)
+        self.residual_scale = float(residual_scale)
+        param_kwargs = {k: v for k, v in kwargs.items() if k in ("device", "dtype")}
+        self.token_residual = nn.Parameter(
+            trunc_normal_init_(torch.empty((vocab_size, self.residual_rank), **param_kwargs), std=1.0 / math.sqrt(self.residual_rank))  # pyright: ignore[reportArgumentType]
+        )
+        self.hidden_residual = nn.Parameter(
+            trunc_normal_init_(torch.empty((self.residual_rank, hidden_size), **param_kwargs), std=init_std)  # pyright: ignore[reportArgumentType]
+        )
+
+    def _lowrank_residual(self, dtype: torch.dtype | None = None) -> Tensor:
+        dtype = dtype or self.token_residual.dtype
+        return (self.token_residual.to(dtype=dtype) @ self.hidden_residual.to(dtype=dtype)) * self.residual_scale
+
+    def _dense_weight_from_parts(self,
+                                 coefficients: Tensor,
+                                 token_residual: Tensor,
+                                 hidden_residual: Tensor,
+                                 dtype: torch.dtype | None = None) -> Tensor:
+        ordered_weight = self.ordered_dense_weight(coefficients, dtype=dtype)
+        fourier_weight = _apply_token_permutation(ordered_weight, self.token_permutation)
+        dtype = dtype or coefficients.dtype
+        residual = (token_residual.to(dtype=dtype) @ hidden_residual.to(dtype=dtype)) * self.residual_scale
+        return fourier_weight + residual
+
+    def dense_weight(self, dtype: torch.dtype | None = None) -> Tensor:
+        if self.checkpoint_weight and self.training and torch.is_grad_enabled():
+            return checkpoint(
+                lambda coefficients, token_residual, hidden_residual: self._dense_weight_from_parts(
+                    coefficients,
+                    token_residual,
+                    hidden_residual,
+                    dtype=dtype,
+                ),
+                self.coefficients,
+                self.token_residual,
+                self.hidden_residual,
+                use_reentrant=False,
+            )
+        return self._dense_weight_from_parts(self.coefficients, self.token_residual, self.hidden_residual, dtype=dtype)
+
+    def logits(self, hidden_states: Tensor, weight: Tensor | None = None) -> Tensor:
+        if weight is None and self.checkpoint_weight and self.training and torch.is_grad_enabled():
+            def _checkpointed_logits(coefficients, token_residual, hidden_residual, hidden_states, bias):
+                w = self._dense_weight_from_parts(
+                    coefficients,
+                    token_residual,
+                    hidden_residual,
+                    dtype=hidden_states.dtype,
+                )
+                b = bias.to(dtype=hidden_states.dtype) if bias is not None else None
+                return F.linear(hidden_states, w, b)
+
+            return checkpoint(
+                _checkpointed_logits,
+                self.coefficients,
+                self.token_residual,
+                self.hidden_residual,
+                hidden_states,
+                self.bias,
+                use_reentrant=False,
+            )
+
+        dense_weight = self.dense_weight(dtype=hidden_states.dtype) if weight is None else weight.to(dtype=hidden_states.dtype)
+        bias = self.bias.to(dtype=hidden_states.dtype) if self.bias is not None else None
+        return F.linear(hidden_states, dense_weight, bias)
+
+
 class UntiedFourierVocab(nn.Module):
     def __init__(self,
                  vocab_size: int,
@@ -399,6 +499,17 @@ class LMHead(nn.Module):
                         **common_kwargs,
                         vocab_modes=config.vocab_head.vocab_modes,
                         hidden_modes=config.vocab_head.hidden_modes,
+                        basis_type=config.vocab_head.basis_type,
+                        token_order=config.vocab_head.token_order,
+                        checkpoint_weight=config.vocab_head.checkpoint_weight,
+                    )
+                case "hybrid_fourier_lowrank":
+                    self.vocab_head = HybridFourierLowRankVocab(
+                        **common_kwargs,
+                        vocab_modes=config.vocab_head.vocab_modes,
+                        hidden_modes=config.vocab_head.hidden_modes,
+                        residual_rank=config.vocab_head.residual_rank,
+                        residual_scale=config.vocab_head.residual_scale,
                         basis_type=config.vocab_head.basis_type,
                         token_order=config.vocab_head.token_order,
                         checkpoint_weight=config.vocab_head.checkpoint_weight,
