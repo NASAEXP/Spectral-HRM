@@ -341,6 +341,127 @@ class Attention(nn.Module):
         return self.o_proj(attn_output)
 
 
+class PolyAttention(nn.Module):
+    """Small order-3 polynomial attention island.
+
+    This is a practical packed PrefixLM version of the h2 pattern
+    h(x1, x2, x3) = x1*x2 + x2*x3. It is intentionally used as a sparse
+    TRM-style island, not as a full replacement for the fast PoM/FLA path.
+    """
+
+    def __init__(self,
+                 hidden_size,
+                 head_dim,
+                 num_heads,
+                 num_key_value_heads,
+                 attn_type,
+                 init_std_in=None,
+                 init_std_out=None,
+                 fourier_linear=None,
+                 polyattn_dropout: float = 0.0,
+                 **kwargs):
+        super().__init__()
+        if hidden_size != head_dim * num_heads:
+            raise ValueError("PolyAttention requires hidden_size == head_dim * num_heads.")
+        if num_key_value_heads != num_heads:
+            raise ValueError("PolyAttention currently requires num_key_value_heads == num_heads.")
+
+        self.hidden_size = hidden_size
+        self.head_dim = head_dim
+        self.num_heads = num_heads
+        self.num_key_value_heads = num_key_value_heads
+        self.attn_type = attn_type
+
+        self.qkv_proj = make_linear(hidden_size, head_dim, batch_out_features=(5 * num_heads,),
+                                    bias=False, init_std=init_std_in, fourier_linear=fourier_linear, role="attention", **kwargs)
+        self.gate_proj = make_linear(hidden_size, hidden_size, bias=False, init_std=init_std_in, fourier_linear=fourier_linear, role="attention", **kwargs)
+        self.dropout = nn.Dropout(polyattn_dropout) if polyattn_dropout > 0 else nn.Identity()
+        self.o_proj = make_linear(hidden_size, hidden_size, bias=False, init_std=init_std_out, fourier_linear=fourier_linear, role="attention", **kwargs)
+
+    def _allowed_mask(self, seq_len: int, prefix_len: int, device: torch.device) -> Tensor:
+        positions = torch.arange(seq_len, device=device)
+        allowed = positions[:, None] >= positions[None, :]
+        if self.attn_type == "prefixlm" and prefix_len > 0:
+            allowed[:prefix_len, :prefix_len] = True
+        return allowed
+
+    def _mix_sequence(self,
+                      q1_seq: Tensor,
+                      k1_seq: Tensor,
+                      k2_seq: Tensor,
+                      v2_seq: Tensor,
+                      v3_seq: Tensor,
+                      prefix_len: int,
+                      output_dtype: torch.dtype) -> Tensor:
+        seq_len = q1_seq.shape[0]
+        scale = 1.0 / math.sqrt(self.head_dim)
+        allowed = self._allowed_mask(seq_len, prefix_len, q1_seq.device)
+        score_floor = torch.finfo(torch.float32).min
+
+        q1 = q1_seq.float()
+        k1 = k1_seq.float()
+        k2 = k2_seq.float()
+        v2 = v2_seq.float()
+        v3 = v3_seq.float()
+
+        # h2 factorization:
+        #   exp(q1_i*k1_j + k1_j*k2_k) * (v2_j * v3_k)
+        # First fold k2/v3 into each j, then attend from i to j.
+        inner_scores = torch.einsum("jhd,khd->hjk", k1, k2) * scale
+        inner_scores = inner_scores.masked_fill(~allowed.unsqueeze(0), score_floor)
+        inner_weights = torch.softmax(inner_scores, dim=-1)
+        inner_values = torch.einsum("hjk,khd->jhd", inner_weights, v3)
+        poly_values = v2 * inner_values
+
+        outer_scores = torch.einsum("ihd,jhd->hij", q1, k1) * scale
+        outer_scores = outer_scores.masked_fill(~allowed.unsqueeze(0), score_floor)
+        outer_weights = torch.softmax(outer_scores, dim=-1)
+        mixed = torch.einsum("hij,jhd->ihd", outer_weights, poly_values)
+        return mixed.to(output_dtype)
+
+    def forward(self, hidden_states: Tensor, cos_sin: Optional[CosSin], cache: Optional[Cache] = None, cache_lengths: Optional[Tensor] = None, **seq_info) -> Tensor:
+        if cache is not None:
+            raise NotImplementedError("PolyAttention does not support cached generation yet.")
+        if hidden_states.dim() != 2:
+            raise NotImplementedError("PolyAttention currently supports packed [tokens, hidden] inputs only.")
+
+        total_seqlen = _tensor_item(seq_info.get("total_seqlen", hidden_states.shape[0]))
+        numseqs = _tensor_item(seq_info.get("numseqs", 1))
+        cu_seqlens = unwrap_tensor(seq_info.get("cu_seqlens", torch.tensor([0, total_seqlen], device=hidden_states.device)))
+        prefix_lens = unwrap_tensor(seq_info.get("prefix_lens", torch.tensor([0], device=hidden_states.device)))
+
+        qkv = self.qkv_proj(hidden_states)
+        qkv = rearrange(qkv, "s (h hd) -> s h hd", h=5 * self.num_heads)
+        q1, k1, k2, v2, v3 = qkv.split((self.num_heads, self.num_heads, self.num_heads, self.num_heads, self.num_heads), dim=1)
+        gates = torch.sigmoid(self.gate_proj(hidden_states))
+
+        out = torch.zeros_like(hidden_states)
+        for seq_idx in range(numseqs):
+            start = int(cu_seqlens[seq_idx].item())
+            end = int(cu_seqlens[seq_idx + 1].item())
+            seq_len = end - start
+            if seq_len <= 0:
+                continue
+
+            prefix_len = min(int(prefix_lens[seq_idx].item()), seq_len) if self.attn_type == "prefixlm" else 0
+            mixed = self._mix_sequence(
+                q1[start:end],
+                k1[start:end],
+                k2[start:end],
+                v2[start:end],
+                v3[start:end],
+                prefix_len,
+                hidden_states.dtype,
+            )
+            mixed = rearrange(mixed, "s h hd -> s (h hd)")
+            out[start:end] = self.dropout(gates[start:end] * mixed)
+
+        if total_seqlen < hidden_states.shape[0]:
+            out[total_seqlen:] = 0
+
+        return self.o_proj(out)
+
+
 class PoMAttention(nn.Module):
     """PoM-style polynomial token mixer with PrefixLM-safe masking.
 

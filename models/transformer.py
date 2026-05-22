@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from torch import Tensor, nn
 from pydantic import BaseModel, Field
 
-from models.layers import SwiGLU, AttnType, Attention, DeltaNetAttention, FLAGatedDeltaNetAttention, GatedDeltaNetAttention, PoMAttention, SLAAttention, SpectreAttention, Cache, RotaryEmbedding, find_multiple
+from models.layers import SwiGLU, AttnType, Attention, DeltaNetAttention, FLAGatedDeltaNetAttention, GatedDeltaNetAttention, PolyAttention, PoMAttention, SLAAttention, SpectreAttention, Cache, RotaryEmbedding, find_multiple
 
 
 class InitConfig(BaseModel):
@@ -44,12 +44,16 @@ class TransformerConfig(BaseModel):
 
     pos_emb_type: Literal["rope", "none"]
     rope_theta: Optional[float] = None
-    token_mixer: Literal["attention", "spectre", "pom", "sla", "deltanet", "precond_deltanet", "gdn", "fla_gdn"] = "attention"
+    token_mixer: Literal["attention", "spectre", "pom", "polyattn", "sla", "deltanet", "precond_deltanet", "gdn", "fla_gdn"] = "attention"
+    trm_island_every: int = 0
+    trm_island_mixer: Literal["attention", "spectre", "pom", "polyattn", "sla", "deltanet", "precond_deltanet", "gdn"] = "polyattn"
+    trm_island_steps: int = 2
     spectre_num_buckets: int = 16
     spectre_gate_hidden: Optional[int] = None
     spectre_dropout: float = 0.0
     pom_order: int = 4
     pom_dropout: float = 0.0
+    polyattn_dropout: float = 0.0
     sla_eps: float = 1e-6
     deltanet_eps: float = 1e-6
     precond_squash: float = 1.5
@@ -105,6 +109,11 @@ class TransformerBlock(nn.Module):
                 pom_order=config.pom_order,
                 pom_dropout=config.pom_dropout,
             )
+        elif config.token_mixer == "polyattn":
+            self.attn = PolyAttention(
+                **attn_kwargs,
+                polyattn_dropout=config.polyattn_dropout,
+            )
         elif config.token_mixer == "sla":
             self.attn = SLAAttention(
                 **attn_kwargs,
@@ -150,6 +159,27 @@ class TransformerBlock(nn.Module):
         return self.norm(x + self.mlp(x))
 
 
+class TRMIslandBlock(nn.Module):
+    def __init__(self, config: TransformerConfig) -> None:
+        super().__init__()
+        island_config = config.model_copy(update={
+            "token_mixer": config.trm_island_mixer,
+            "trm_island_every": 0,
+        })
+        self.block = TransformerBlock(island_config)
+        self.steps = max(1, int(config.trm_island_steps))
+
+    def forward(self, x: Tensor, cache: Optional[Cache] = None, **seq_info) -> Tensor:
+        if cache is not None:
+            raise NotImplementedError("TRMIslandBlock does not support cached generation yet.")
+
+        injected = x
+        state = x
+        for _step in range(self.steps):
+            state = self.block(state + injected, **seq_info)
+        return state
+
+
 class Transformer(nn.Module):
     def __init__(self, config: TransformerConfig) -> None:
         super().__init__()
@@ -162,7 +192,13 @@ class Transformer(nn.Module):
             self.rotary_emb = RotaryEmbedding(config.hidden_size // config.num_heads, config.max_seq_len, base=config.rope_theta)
 
         # Layers
-        self.layers = nn.ModuleList([TransformerBlock(config) for _layer_idx in range(config.n_layers)])
+        layers = []
+        for layer_idx in range(config.n_layers):
+            if config.trm_island_every > 0 and (layer_idx + 1) % config.trm_island_every == 0:
+                layers.append(TRMIslandBlock(config))
+            else:
+                layers.append(TransformerBlock(config))
+        self.layers = nn.ModuleList(layers)
 
         # Use final norm only for prenorm
         self.norm_f = lambda x: x

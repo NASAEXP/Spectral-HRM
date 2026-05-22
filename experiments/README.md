@@ -46,3 +46,4 @@ Each experiment note should include:
 - Experiment 24 - FLA GDN Speed Pass
 - Experiment 25 - Full Stack Comparison
 - Experiment 26 - Hybrid Fourier Vocab Bridge
+- Experiment 27 - TRM Island PolyAttn
