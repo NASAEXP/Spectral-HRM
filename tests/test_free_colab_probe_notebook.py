@@ -27,4 +27,5 @@ def test_free_colab_notebook_runs_fla_gate_and_tiny_gdn_smoke():
     assert "Experiment 22 - FLA GDN Kernel Probe" in text
     assert "Experiment 21 - Gated DeltaNet H-Level" in text
     assert "Experiment 24 - FLA GDN Speed Pass" in text
+    assert "Experiment 25 - Full Stack Comparison" in text
     assert "--steps 5 --seeds 1" in text
