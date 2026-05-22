@@ -13,6 +13,7 @@ Added `full_stack_comparison.py` with these variants:
 | Variant | L-level | H-level | Vocab/head | Why it is here |
 | --- | --- | --- | --- | --- |
 | `dense-attention` | dense attention | dense attention | untied dense vocab | original-ish control |
+| `dense-tied-attention` | dense attention | dense attention | dense tied vocab | separates attention quality from untied vocab/head capacity |
 | `fourier-pom-sla-tied-fourier` | PoM | SLA | tied Fourier vocab | current small/fast spectral baseline |
 | `fourier-pom-fla-gdn-tied-fourier` | PoM | FLA GDN | tied Fourier vocab | best compressed-vocab GDN candidate |
 | `fourier-pom-fla-gdn-dense-tied` | PoM | FLA GDN | dense tied vocab | checks if the Fourier vocab is helping or hurting |
@@ -111,6 +112,8 @@ Summary:
 | `fourier-pom-fla-gdn-tied-fourier` | 6.8271 | 844,872 | 1,829.2 MB | 88.67 | 23,107.3 | fast and compact, but still too compressed |
 | `fourier-pom-fla-gdn-dense-tied` | 3.4149 | 17,523,784 | 1,827.5 MB | 86.60 | 23,658.9 | best spectral tradeoff |
 
+Note: this run happened before `dense-tied-attention` was added. Re-run the main command to get the fifth control row.
+
 Plain read:
 
 - Dense attention still wins loss by a lot at this tiny-data, short-run scale.
@@ -121,14 +124,17 @@ Plain read:
 
 Next gate:
 
-- Add a vocab bridge sweep between `tied_fourier` and `dense_tied`: larger modes, hybrid dense residual, or trainable low-rank residual.
-- Compare against a dense-tied attention control so we know how much of the dense win comes from attention vs the untied dense vocab/head.
+- Re-run this experiment with `dense-tied-attention` included.
+- If `dense-tied-attention` stays close to `dense-attention`, the old dense win mostly came from normal attention/body behavior.
+- If `dense-tied-attention` drops near `fourier-pom-fla-gdn-dense-tied`, the old dense win was partly an untied vocab/head advantage.
+- After that, add a vocab bridge sweep between `tied_fourier` and `dense_tied`: larger modes, hybrid dense residual, or trainable low-rank residual.
 
 Tiny local CPU smoke:
 
 | Variant | Final eval | Params | ms/step | Tokens/s | Note |
 | --- | ---: | ---: | ---: | ---: | --- |
 | `dense-attention` | 11.4412 | 8,527,872 | 125.66 | 509.3 | dense original-ish control |
+| `dense-tied-attention` | 11.5891 | 4,333,568 | 110.39 | 579.8 | dense attention with shared vocab/head |
 | `fourier-pom-sla-tied-fourier` | 8.0017 | 135,428 | 239.85 | 266.8 | compressed spectral path |
 
 This local smoke is only a wiring check. The real comparison still needs Colab with CUDA, especially for the FLA GDN variants.

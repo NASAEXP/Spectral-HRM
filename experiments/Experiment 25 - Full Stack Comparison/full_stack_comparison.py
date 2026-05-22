@@ -38,10 +38,15 @@ VOCAB_PROBE = _load_vocab_probe()
 TOKENIZER_ORDERING = _load_tokenizer_ordering()
 HOLDOUT = VOCAB_PROBE.HOLDOUT
 
-DEFAULT_VARIANTS = "dense-attention,fourier-pom-sla-tied-fourier,fourier-pom-fla-gdn-tied-fourier,fourier-pom-fla-gdn-dense-tied"
+DEFAULT_VARIANTS = "dense-attention,dense-tied-attention,fourier-pom-sla-tied-fourier,fourier-pom-fla-gdn-tied-fourier,fourier-pom-fla-gdn-dense-tied"
 VARIANT_SPECS = {
     "dense-attention": {
         "base_variant": "dense",
+        "L_mixer": "attention",
+        "H_mixer": "attention",
+    },
+    "dense-tied-attention": {
+        "base_variant": "dense-tied-vocab",
         "L_mixer": "attention",
         "H_mixer": "attention",
     },

@@ -16,9 +16,10 @@ def test_parse_variants_keeps_full_stack_order():
     probe = _load_probe_module()
 
     assert probe.parse_variants(
-        "dense-attention,fourier-pom-sla-tied-fourier,fourier-pom-fla-gdn-tied-fourier,fourier-pom-fla-gdn-dense-tied"
+        "dense-attention,dense-tied-attention,fourier-pom-sla-tied-fourier,fourier-pom-fla-gdn-tied-fourier,fourier-pom-fla-gdn-dense-tied"
     ) == [
         "dense-attention",
+        "dense-tied-attention",
         "fourier-pom-sla-tied-fourier",
         "fourier-pom-fla-gdn-tied-fourier",
         "fourier-pom-fla-gdn-dense-tied",
@@ -41,6 +42,26 @@ def test_dense_attention_config_is_originalish_control():
 
     assert "fourier_linear" not in config
     assert "vocab_head" not in config
+    assert config["token_mixer"] == "attention"
+    assert config["H_override"]["token_mixer"] == "attention"
+
+
+def test_dense_tied_attention_config_controls_vocab_tying_only():
+    probe = _load_probe_module()
+
+    config = probe.make_config(
+        variant="dense-tied-attention",
+        vocab_size=65536,
+        seq_len=256,
+        hidden_size=256,
+        vocab_modes=512,
+        hidden_modes=64,
+        fourier_mode=64,
+        pom_order=4,
+    )
+
+    assert "fourier_linear" not in config
+    assert config["vocab_head"]["type"] == "dense_tied"
     assert config["token_mixer"] == "attention"
     assert config["H_override"]["token_mixer"] == "attention"
 
