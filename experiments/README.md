@@ -47,3 +47,4 @@ Each experiment note should include:
 - Experiment 25 - Full Stack Comparison
 - Experiment 26 - Hybrid Fourier Vocab Bridge
 - Experiment 27 - TRM Island PolyAttn
+- Experiment 28 - Hybrid Vocab Scale Sweep
